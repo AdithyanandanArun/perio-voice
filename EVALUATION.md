@@ -121,6 +121,22 @@ The routing gate caught both, and both would have been chart errors:
 Both have unambiguous synonyms already in the grammar. The gate now fails on any
 chartable content emitted from conversational audio, not just on digits.
 
+### A larger acoustic model is not available to this approach
+
+`vosk-model-en-us-0.22` (2.7 GB unpacked) was measured and rejected. It refuses
+runtime grammars — `Runtime graphs are not supported by this model` — so it can
+only run unconstrained, and unconstrained is exactly the mode that performs
+badly here:
+
+| model | grammar | word error rate | exact match | ms |
+| --- | --- | ---: | ---: | ---: |
+| `vosk-model-en-us-0.22-lgraph` (128 MB) | yes | 0.060 | 93% | 166 |
+| `vosk-model-en-us-0.22` (2.7 GB) | no | 0.211 | 73% | 275 |
+
+The grammar is doing the work, not the acoustic model's size. Among English Vosk
+models only the `-lgraph` variants accept a runtime grammar, so this is the
+ceiling for the constrained approach locally rather than a tuning choice.
+
 ### What this does and does not establish
 
 The audio is **synthesized, one voice, no room**. Absolute accuracy here is
