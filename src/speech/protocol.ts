@@ -5,6 +5,28 @@ import type {
   TranscriptTiming,
 } from '../domain/types';
 
+/**
+ * Microphone constraints for recognition.
+ *
+ * The browser's own speech processing is off on purpose. Noise suppression and
+ * automatic gain control are tuned for voice calls, where the listener is a
+ * person who tolerates artefacts: they gate low-energy speech and pump levels
+ * between utterances. Both behaviours damage exactly what this product depends
+ * on — short, quiet, fricative-initial words like "three" and "five" — and they
+ * do it before any code here can see the audio, which is why no file-based
+ * benchmark in this repository can detect the damage.
+ *
+ * Echo cancellation stays on: it needs a far-end reference to do anything, so
+ * with no playback it is inert, and it is what stops the machine's own audio
+ * being transcribed if that ever changes.
+ */
+export const CAPTURE_CONSTRAINTS = {
+  channelCount: 1,
+  echoCancellation: true,
+  noiseSuppression: false,
+  autoGainControl: false,
+} as const;
+
 export const ASR_PROTOCOL_VERSION = 1;
 export const TARGET_SAMPLE_RATE = 16_000;
 

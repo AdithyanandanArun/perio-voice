@@ -14,6 +14,7 @@ import {
   type AsrModelInfo,
   type AsrServerMessage,
   type AsrStatus,
+  CAPTURE_CONSTRAINTS,
   type CadenceInfo,
   type ClinicalExpectation,
   type EnrollmentState,
@@ -54,6 +55,7 @@ export interface LocalAsrController {
 
 /** Seconds of speech requested when enrolling a clinician's voice. */
 export const ENROLLMENT_SECONDS = 6;
+
 
 interface CaptureResources {
   stream: MediaStream;
@@ -261,14 +263,7 @@ export function useLocalAsr({ onFinal, contextVersion }: UseLocalAsrOptions): Lo
     let pendingStream: MediaStream | null = null;
     let pendingContext: AudioContext | null = null;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: CAPTURE_CONSTRAINTS });
       if (!desiredListeningRef.current) {
         for (const track of stream.getTracks()) track.stop();
         return;

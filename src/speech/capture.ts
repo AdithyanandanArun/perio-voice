@@ -1,4 +1,4 @@
-import { TARGET_SAMPLE_RATE } from './protocol';
+import { CAPTURE_CONSTRAINTS, TARGET_SAMPLE_RATE } from './protocol';
 
 const MAX_CAPTURE_SECONDS = 30;
 
@@ -71,7 +71,9 @@ export async function captureSeconds(
 
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: false },
+      // Same constraints as recognition, so an enrolled profile describes the
+      // voice as the recognizer will actually receive it.
+      audio: CAPTURE_CONSTRAINTS,
     });
     if (options.signal?.aborted) throw abortError();
 
