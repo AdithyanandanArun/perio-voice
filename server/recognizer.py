@@ -9,6 +9,7 @@ from typing import Protocol
 
 from server.audio import FloatAudio
 from server.config import Settings
+from server.prompt import dental_prompt
 
 
 class ModelStatus(StrEnum):
@@ -54,6 +55,7 @@ class FasterWhisperRecognizer:
         self.compute_type = settings.compute_type
         self.language = settings.language
         self.model_dir = settings.model_dir
+        self.bias_prompt = settings.bias_prompt
         self.status = ModelStatus.IDLE
         self.error: str | None = None
         self._model: object | None = None
@@ -104,6 +106,10 @@ class FasterWhisperRecognizer:
             best_of=1,
             temperature=0.0,
             condition_on_previous_text=False,
+            # Biasing costs nothing at decode time and is the cheapest available
+            # defence against a general model substituting everyday English for
+            # clinical vocabulary.
+            initial_prompt=dental_prompt() if self.bias_prompt else None,
             word_timestamps=not partial,
             vad_filter=False,
             without_timestamps=partial,

@@ -18,6 +18,7 @@
  * evaluation reports and telemetry.
  */
 
+import dentalPromptFile from '../../shared/dental-prompt.json';
 import { normalizeText } from './text';
 
 export const LEXICON_VERSION = '2026.09.1';
@@ -498,13 +499,22 @@ export function variantCount(): number {
  * Biasing prompt handed to the recognizer. Whisper conditions its decoder on
  * this text, which pulls rare clinical vocabulary above the common English word
  * it would otherwise emit.
+ *
+ * It lives in `shared/dental-prompt.json` because the Python recognizer has to
+ * bias with exactly the same text. `tests/lexicon.test.ts` fails when a
+ * prompt-marked term is missing from it, so the two cannot drift apart.
  */
 export function dentalPrompt(): string {
-  const terms = LEXICON.filter((entry) => entry.prompt === true).map(
+  return dentalPromptFile.prompt;
+}
+
+export function promptVersion(): string {
+  return dentalPromptFile.version;
+}
+
+/** Spoken forms the prompt must mention, derived from the lexicon itself. */
+export function promptTerms(): string[] {
+  return LEXICON.filter((entry) => entry.prompt === true).map(
     (entry) => entry.promptText ?? entry.canonical,
-  );
-  return (
-    `Periodontal charting: ${terms.join(', ')}, mesial, distal. `
-    + 'Depths are single digits one through twelve; tooth numbers run one through thirty-two.'
   );
 }

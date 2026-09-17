@@ -117,3 +117,80 @@ def test_failed_model_load_can_be_retried_over_the_socket() -> None:
         ready = receive_until(socket, "model_ready")
         assert ready["status"] == "ready"
         assert recognizer.load_attempts == 2
+
+
+def _voiced_pcm(seconds: float, frequency: float = 140.0) -> bytes:
+    """A steady voiced-like signal, long enough to satisfy enrollment."""
+    samples = np.arange(int(16_000 * seconds))
+    tone = np.zeros_like(samples, dtype=np.float64)
+    for harmonic in range(1, 12):
+        tone += np.sin(2 * np.pi * frequency * harmonic * samples / 16_000) / harmonic
+    tone = tone / np.max(np.abs(tone)) * 0.5
+    return (tone * 32_767).astype("<i2").tobytes()
+
+
+def test_health_reports_the_runtime_contract_the_browser_depends_on() -> None:
+    app = create_app(FakeRecognizer(), Settings())
+    with TestClient(app) as client:
+        runtime = client.get("/api/health").json()["runtime"]
+        assert runtime["protocol"] == 1
+        assert runtime["denoiseProfile"] == "none"
+        assert runtime["cadenceAdaptive"] is True
+        assert runtime["endpointBandMs"][0] <= runtime["endSilenceMs"]
+        assert runtime["endSilenceMs"] <= runtime["endpointBandMs"][1]
+        assert runtime["promptVersion"]
+
+
+def test_speaker_enrollment_is_explicit_and_revocable() -> None:
+    app = create_app(FakeRecognizer(), Settings())
+    with TestClient(app) as client:
+        assert client.get("/api/speaker").json()["enrolled"] is False
+
+        too_short = client.post("/api/speaker/enroll", content=_voiced_pcm(0.2))
+        assert too_short.status_code == 400
+        assert "at least" in too_short.json()["error"]
+        assert client.get("/api/speaker").json()["enrolled"] is False
+
+        enrolled = client.post("/api/speaker/enroll", content=_voiced_pcm(3.0))
+        assert enrolled.status_code == 200
+        assert enrolled.json()["enrolled"] is True
+        assert enrolled.json()["samples"] == 1
+        assert enrolled.json()["voicedMs"] >= 2_900
+
+        state = client.get("/api/speaker").json()
+        assert state["acceptThreshold"] > state["rejectThreshold"]
+
+        assert client.post("/api/speaker/reset").json()["enrolled"] is False
+        assert client.get("/api/speaker").json()["samples"] == 0
+
+
+def test_malformed_enrollment_audio_is_reported_not_stored() -> None:
+    app = create_app(FakeRecognizer(), Settings())
+    with TestClient(app) as client:
+        response = client.post("/api/speaker/enroll", content=b"\x01")
+        assert response.status_code == 400
+        assert client.get("/api/speaker").json()["enrolled"] is False
+
+
+def test_finals_carry_attribution_only_once_a_clinician_is_enrolled() -> None:
+    settings = Settings(vad_rms_threshold=0.01, pre_roll_ms=0, min_speech_ms=50, end_silence_ms=200)
+    app = create_app(FakeRecognizer(), settings)
+    with TestClient(app) as client:
+
+        def run_utterance() -> dict[str, object]:
+            with client.websocket_connect("/ws/asr") as socket:
+                socket.receive_json()
+                socket.receive_json()
+                socket.send_json({"type": "start"})
+                socket.send_bytes(pcm_frame(0.2))
+                socket.send_bytes(pcm_frame(0))
+                socket.send_json({"type": "stop"})
+                return receive_until(socket, "final")
+
+        assert run_utterance()["speaker"] is None
+
+        client.post("/api/speaker/enroll", content=_voiced_pcm(3.0))
+        speaker = run_utterance()["speaker"]
+        assert isinstance(speaker, dict)
+        assert speaker["enrolled"] is True
+        assert speaker["decision"] in {"clinician", "other", "unknown"}

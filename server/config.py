@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from server.denoise import DenoiseProfile, parse_profile
+
 
 def _env_int(name: str, default: int) -> int:
     return int(os.getenv(name, str(default)))
@@ -11,6 +13,13 @@ def _env_int(name: str, default: int) -> int:
 
 def _env_float(name: str, default: float) -> float:
     return float(os.getenv(name, str(default)))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +41,12 @@ class Settings:
     speaker_reject: float = 0.955
     speaker_min_ms: int = 400
     speaker_enroll_ms: int = 2_000
+    cadence_adaptive: bool = True
+    min_end_silence_ms: int = 300
+    max_end_silence_ms: int = 1_100
+    cadence_window: int = 6
+    denoise_profile: DenoiseProfile = DenoiseProfile.NONE
+    bias_prompt: bool = True
     allowed_origins: tuple[str, ...] = (
         "http://127.0.0.1:5173",
         "http://localhost:5173",
@@ -56,6 +71,19 @@ class Settings:
             raise ValueError("ASR_SPEAKER_MIN_MS must be positive.")
         if self.speaker_enroll_ms < self.speaker_min_ms:
             raise ValueError("ASR_SPEAKER_ENROLL_MS must be at least ASR_SPEAKER_MIN_MS.")
+        if not 0 < self.min_end_silence_ms <= self.max_end_silence_ms:
+            raise ValueError("ASR_MIN_END_SILENCE_MS must be positive and below the maximum.")
+        if self.cadence_window < 1:
+            raise ValueError("ASR_CADENCE_WINDOW must be at least 1.")
+
+    @property
+    def endpoint_floor_ms(self) -> int:
+        """The adaptive band always contains the configured starting point."""
+        return min(self.min_end_silence_ms, self.end_silence_ms)
+
+    @property
+    def endpoint_ceiling_ms(self) -> int:
+        return max(self.max_end_silence_ms, self.end_silence_ms)
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -77,6 +105,12 @@ class Settings:
             speaker_reject=_env_float("ASR_SPEAKER_REJECT", 0.955),
             speaker_min_ms=_env_int("ASR_SPEAKER_MIN_MS", 400),
             speaker_enroll_ms=_env_int("ASR_SPEAKER_ENROLL_MS", 2_000),
+            cadence_adaptive=_env_bool("ASR_CADENCE_ADAPTIVE", True),
+            min_end_silence_ms=_env_int("ASR_MIN_END_SILENCE_MS", 300),
+            max_end_silence_ms=_env_int("ASR_MAX_END_SILENCE_MS", 1_100),
+            cadence_window=_env_int("ASR_CADENCE_WINDOW", 6),
+            denoise_profile=parse_profile(os.getenv("ASR_DENOISE_PROFILE", "none")),
+            bias_prompt=_env_bool("ASR_BIAS_PROMPT", True),
             allowed_origins=tuple(
                 origin.strip()
                 for origin in os.getenv(

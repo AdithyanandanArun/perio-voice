@@ -31,6 +31,8 @@ class DecodeRequest:
     started_at_ms: float
     ended_at_ms: float
     sample_rate: int = 16_000
+    """Set when the request entered the decode queue, for queue-wait telemetry."""
+    queued_at_ms: float = 0.0
 
     @property
     def audio_ms(self) -> int:
@@ -59,6 +61,9 @@ class SpeechSegmenter:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        # Mutable so the cadence controller can move the endpoint inside its
+        # safe band without rebuilding the segmenter mid-stream.
+        self.end_silence_ms = settings.end_silence_ms
         self._pre_roll: deque[tuple[FloatAudio, float]] = deque()
         self._pre_roll_samples = 0
         self._speech_chunks: list[FloatAudio] = []
@@ -110,7 +115,7 @@ class SpeechSegmenter:
         since_partial_ms = self._since_partial_samples / self.settings.sample_rate * 1_000
         if utterance_ms >= self.settings.max_utterance_ms:
             events.append(self._finish(received_at_ms))
-        elif silence_ms >= self.settings.end_silence_ms:
+        elif silence_ms >= self.end_silence_ms:
             if voiced_ms >= self.settings.min_speech_ms:
                 events.append(self._finish(received_at_ms))
             else:

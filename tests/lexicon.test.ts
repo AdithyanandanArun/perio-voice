@@ -6,6 +6,8 @@ import {
   canonicalTerms,
   categoryOf,
   dentalPrompt,
+  promptTerms,
+  promptVersion,
   variantCount,
 } from '../src/domain/lexicon';
 
@@ -93,11 +95,12 @@ describe('dental lexicon', () => {
     expect(canonicalTerms()).toContain('furcation');
   });
 
-  it('builds a recognizer prompt from the prompt-marked vocabulary', () => {
+  it('shares one recognizer prompt with the Python service and keeps it complete', () => {
     const prompt = dentalPrompt();
-    for (const term of ['probing', 'buccal', 'lingual', 'furcation', 'suppuration', 'recession']) {
-      expect(prompt).toContain(term.slice(0, 6));
+    for (const term of promptTerms()) {
+      expect(prompt, `prompt is missing "${term}"`).toContain(term);
     }
+    expect(promptVersion()).toBe(LEXICON_VERSION);
     expect(prompt.length).toBeLessThan(600);
   });
 });

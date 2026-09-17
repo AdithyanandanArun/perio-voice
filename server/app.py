@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 
+from server.audio import decode_pcm16
 from server.config import Settings
+from server.prompt import prompt_version
 from server.recognizer import FasterWhisperRecognizer, ModelStatus, Recognizer
 from server.session import AsrSession
+from server.speaker import SpeakerGate
+from server.telemetry import Telemetry
 
 PROTOCOL_VERSION = 1
 
@@ -23,12 +28,14 @@ def create_app(
 ) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
     resolved_recognizer = recognizer or FasterWhisperRecognizer(resolved_settings)
+    telemetry = Telemetry()
+    speaker_gate = SpeakerGate(resolved_settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.model_task = None
         if preload:
-            app.state.model_task = asyncio.create_task(_load_model(resolved_recognizer))
+            app.state.model_task = asyncio.create_task(_load_model(resolved_recognizer, telemetry))
         yield
         task: asyncio.Task[None] | None = app.state.model_task
         if task is not None and not task.done():
@@ -39,10 +46,55 @@ def create_app(
     app = FastAPI(title="Perio Voice Local ASR", version="0.2.0", lifespan=lifespan)
     app.state.recognizer = resolved_recognizer
     app.state.settings = resolved_settings
+    app.state.telemetry = telemetry
+    app.state.speaker_gate = speaker_gate
 
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
-        return _model_message(resolved_recognizer, resolved_settings)
+        message = _model_message(resolved_recognizer, resolved_settings)
+        message["runtime"] = {
+            "protocol": PROTOCOL_VERSION,
+            "promptVersion": prompt_version(),
+            "biasPrompt": resolved_settings.bias_prompt,
+            "denoiseProfile": resolved_settings.denoise_profile.value,
+            "endSilenceMs": resolved_settings.end_silence_ms,
+            "endpointBandMs": [
+                resolved_settings.endpoint_floor_ms,
+                resolved_settings.endpoint_ceiling_ms,
+            ],
+            "cadenceAdaptive": resolved_settings.cadence_adaptive,
+        }
+        message["speaker"] = speaker_gate.state().as_message()
+        return message
+
+    @app.get("/api/metrics")
+    async def metrics() -> dict[str, Any]:
+        return telemetry.snapshot()
+
+    @app.get("/api/speaker")
+    async def speaker_state() -> dict[str, Any]:
+        return {
+            **speaker_gate.state().as_message(),
+            "acceptThreshold": resolved_settings.speaker_accept,
+            "rejectThreshold": resolved_settings.speaker_reject,
+            "enrollMs": resolved_settings.speaker_enroll_ms,
+        }
+
+    @app.post("/api/speaker/enroll")
+    async def enroll_speaker(request: Request, response: Response) -> dict[str, Any]:
+        payload = await request.body()
+        try:
+            audio = decode_pcm16(payload)
+            state = speaker_gate.enroll(audio)
+        except ValueError as error:
+            response.status_code = 400
+            return {"error": str(error), **speaker_gate.state().as_message()}
+        return state.as_message()
+
+    @app.post("/api/speaker/reset")
+    async def reset_speaker() -> dict[str, Any]:
+        """Revokes the enrolled profile. Nothing about it was ever persisted."""
+        return speaker_gate.reset().as_message()
 
     @app.websocket("/ws/asr")
     async def asr_socket(websocket: WebSocket) -> None:
@@ -51,6 +103,7 @@ def create_app(
             await websocket.close(code=1008, reason="WebSocket origin is not allowed.")
             return
         await websocket.accept()
+        telemetry.count("connections_total")
         send_lock = asyncio.Lock()
 
         async def send(message: dict[str, Any]) -> None:
@@ -103,6 +156,7 @@ def create_app(
                         try:
                             await session.feed(payload)
                         except ValueError as exc:
+                            telemetry.count("invalid_audio")
                             await send(
                                 {
                                     "type": "error",
@@ -124,7 +178,13 @@ def create_app(
                         continue
                     if session is not None:
                         await session.close()
-                    session = AsrSession(resolved_recognizer, resolved_settings, send)
+                    session = AsrSession(
+                        resolved_recognizer,
+                        resolved_settings,
+                        send,
+                        telemetry=telemetry,
+                        speaker_gate=speaker_gate if speaker_gate.enrolled else None,
+                    )
                     await session.start()
                     await send({"type": "listening"})
                 elif message_type == "stop":
@@ -140,7 +200,9 @@ def create_app(
                     if resolved_recognizer.status in {ModelStatus.IDLE, ModelStatus.ERROR}:
                         resolved_recognizer.status = ModelStatus.LOADING
                         resolved_recognizer.error = None
-                        model_task = asyncio.create_task(_load_model(resolved_recognizer))
+                        model_task = asyncio.create_task(
+                            _load_model(resolved_recognizer, telemetry)
+                        )
                         app.state.model_task = model_task
                         if model_notifier is not None and not model_notifier.done():
                             model_notifier.cancel()
@@ -169,12 +231,16 @@ def create_app(
     return app
 
 
-async def _load_model(recognizer: Recognizer) -> None:
+async def _load_model(recognizer: Recognizer, telemetry: Telemetry) -> None:
+    started = time.perf_counter()
     try:
         await recognizer.load()
     except Exception:
         # The state and safe-to-display error are exposed through the health endpoint.
+        telemetry.count("model_load_failures")
         return
+    telemetry.count("model_loads")
+    telemetry.observe("model_load_ms", (time.perf_counter() - started) * 1_000)
 
 
 def _model_message(recognizer: Recognizer, settings: Settings) -> dict[str, Any]:

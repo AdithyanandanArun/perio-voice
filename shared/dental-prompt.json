@@ -1,0 +1,5 @@
+{
+  "version": "2026.09.1",
+  "description": "Biasing prompt handed to the recognizer so rare clinical vocabulary outranks the common English word it would otherwise emit. Shared by the browser lexicon and the Python recognizer so both sides bias identically; tests/lexicon.test.ts fails if prompt-marked vocabulary is missing here.",
+  "prompt": "Periodontal charting: probing depth, gingival recession, clinical attachment level, bleeding on probing, suppuration, plaque, calculus, mobility grade, furcation involvement, buccal, lingual, mesial, distal, tooth, millimeters. Depths are single digits one through twelve; tooth numbers run one through thirty-two."
+}
