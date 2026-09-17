@@ -140,49 +140,49 @@ Scope: Milestone 1 delivered active local Faster-Whisper recognition and a deter
 
 ## Milestone 3 — recognition that actually works
 
-- [ ] G26: the dental fixture manifest is well formed and every utterance has a cohort and expected outcome
+- [x] G26: the dental fixture manifest is well formed and every utterance has a cohort and expected outcome
   CHECK: node scripts/verify-fixture-capture.mjs --manifest
   EXPECT: FIXTURE_MANIFEST_GATE_PASSED
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=b1320e35e4903f04b9d5d078c33bf496d5401ef5ae7d04551aa1123dd89d5958; exit=0; EXPECT=matched; output-sha256=18ac5c1c3252d319f06f3bc89f9c000033d4563f340a2b6c52cf6fa1fdb31443; output-bytes=29; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
 
-- [ ] G27: recorded dental audio can be scored through the real clinical pipeline
+- [x] G27: recorded dental audio can be scored through the real clinical pipeline
   CHECK: node scripts/verify-dental-evaluation.mjs
   EXPECT: DENTAL_EVALUATION_BRIDGE_PASSED
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=089cb45438d63a0aa060630530097573d8ae965502130a5487c76e6f87450cfb; exit=0; EXPECT=matched; output-sha256=689d93667ec370dd2d1c996a725b3696abebfae3ea24a237f2173354d53383d1; output-bytes=32; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
 
-- [ ] G28: every word the clinical grammars can emit exists in the recognizer lexicon, so no clinical term is silently unrecognizable
+- [x] G28: every word the clinical grammars can emit exists in the recognizer lexicon, so no clinical term is silently unrecognizable
   CHECK: uv run python scripts/verify_grammar_lexicon.py
   EXPECT: GRAMMAR_LEXICON_GATE_PASSED
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=a3f235fa2abce1ceb91cbd59ae17795ab4ea731d09cb451b2cc6b354f45473f8; exit=0; EXPECT=matched; output-sha256=c0c0bf1550ccbebf9e90a53e0f3ca2dcbc0d24705aaedde2148166fc397a7c5c; output-bytes=244; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
 
-- [ ] G29: grammar-constrained recognition beats the previous Whisper configuration on spoken dental phrases by the declared margin
+- [x] G29: grammar-constrained recognition beats the previous Whisper configuration on spoken dental phrases by the declared margin
   CHECK: uv run python scripts/evaluate_recognizers.py --gate
   EXPECT: RECOGNIZER_GATE_PASSED
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=9097f9ffb3766b3f76193a7c1c859d6c7883b7527d2dd2d7ef27fdc38152c0d7; exit=0; EXPECT=matched; output-sha256=83e5db8c1c26f01211cf4fbb88d96660a8601dec1b856636ee3fb40246f8cee5; output-bytes=304; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
 
-- [ ] G30: the active clinical context selects the grammar, and speech outside it yields no clinical value instead of an invented one
+- [x] G30: the active clinical context selects the grammar, and speech outside it yields no clinical value instead of an invented one
   CHECK: uv run python scripts/verify_grammar_routing.py
   EXPECT: GRAMMAR_ROUTING_GATE_PASSED
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=eb234aca0a5f5a828a5bcb9acaba3ac5f88ffb95507d88709c00731f58e5c04b; exit=0; EXPECT=matched; output-sha256=a8450fa69722d241c5570285f27d58f2908309da8facd3dd6ff4d99934980eac; output-bytes=302; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
 
-- [ ] G31: speaker enrollment completes from one ordinary six-second take without raised voice
+- [x] G31: speaker enrollment completes from one ordinary six-second take without raised voice
   CHECK: uv run python scripts/verify_enrollment.py
   EXPECT: ENROLLMENT_GATE_PASSED
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=4a3607e2d03292388fdda1ef5b37bed4ddc5249d545c3ee96b1b514c0ab09a83; exit=0; EXPECT=matched; output-sha256=aba74203f8294ceb3e2334f7acfc26599c0d6e94638a42c027a1eacc60c10033; output-bytes=185; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
 
-- [ ] G32: a half-second clinical utterance produces a speaker decision instead of being held as unknown
+- [x] G32: a half-second clinical utterance produces a speaker decision instead of being held as unknown
   CHECK: uv run python scripts/verify_short_verification.py
   EXPECT: SHORT_VERIFICATION_GATE_PASSED
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=127441562232250a92f1f735d0c7dfe779d66150e47369438498889e5df7f4d4; exit=0; EXPECT=matched; output-sha256=0cab948ac07090086a8c8c8888f5dc86e2b78d6e485aa6232804cb594d11d378; output-bytes=301; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
 
 - [ ] G33: the speaker thresholds sit inside a margin re-measured across the enrollment and verification durations the product actually uses
   CHECK: uv run python scripts/calibrate_speaker.py
   EXPECT: SPEAKER_CALIBRATION_OK
   EVIDENCE: pending
 
-- [ ] G34: setup, configuration, and evaluation documentation describes the recognizer routing and the measured accuracy
+- [x] G34: setup, configuration, and evaluation documentation describes the recognizer routing and the measured accuracy
   CHECK: node scripts/verify-documentation.mjs
   EXPECT: DOCUMENTATION_GATE_PASSED
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=19a0cd1137bb98a8f1f6a522a8be8b55a9d7550a36183eae4606ac7bb5a363c1; exit=0; EXPECT=matched; output-sha256=cea4823b4682d434666fcd9ce41cc5057e7b1713953dcb358201c4f4d7eafb3c; output-bytes=26; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
 
 ABANDON: G33 The speaker profile does not separate voices at the durations this product uses, so no threshold can satisfy this gate. Measured against a six-second enrollment: at 0.5 s the enrolled speaker scored 0.7662 while another voice scored 0.9627, an inverted margin of -0.1965; separation only appears around four seconds, and a rolling four-second window still leaves +0.0007 on clean single-speaker audio. The original +0.0507 margin was measured on 5.5 s against 5.5 s, which is not the comparison the product makes. G31 and G32 fix the two real defects (enrollment now completes from one ordinary take, short utterances now reach a decision) and both pass. Discrimination needs a trained speaker-embedding model behind the same interface; attribution stays off by default and ARCHITECTURE.md and EVALUATION.md both state that it does not work.
