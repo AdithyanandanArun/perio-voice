@@ -103,6 +103,11 @@ Measured on the 30 spoken dental phrases in
 | Whisper `tiny.en`, beam 5 | 0.787 | 40% | 272 |
 | grammar-constrained | **0.060** | **93%** | **163** |
 
+A larger acoustic model is not available to this approach: `vosk-model-en-us-0.22`
+(2.7 GB) refuses runtime grammars outright, so it can only run unconstrained, and
+unconstrained is the mode that performs badly (0.211 word error, 73% exact). The
+grammar is doing the work, not the model size.
+
 Whisper size does not fix this. Across `tiny.en`, `base.en`, `distil-small.en`
 and `small.en`, exact match on these phrases sits between 23% and 30%, and
 `base.en` scores *below* `tiny.en`. The problem is not capacity: a thirty-second
@@ -151,7 +156,20 @@ ASR_GRAMMAR_MODEL_DIR=models/vosk-model-en-us-0.22-lgraph
 ASR_DENOISE_PROFILE=none        # none | highpass | spectral
 ASR_NO_SPEECH_THRESHOLD=0.6     # above this a final is refused as non-speech
 ASR_MIN_FINAL_MS=250            # shorter audio is not decoded at all
+ASR_MAX_ALTERNATIVES=4          # competing readings offered to the clinical context
+ASR_VAD_RMS_THRESHOLD=0.004     # absolute floor for speech detection
+ASR_VAD_MARGIN=3.0              # speech must exceed the tracked noise floor by this
 ```
+
+Speech detection is relative to the room. A fixed threshold has to be chosen for
+one microphone at one distance, and measured on real speech the quietest tenth of
+genuine frames fell below the old fixed value. The detector now tracks the noise
+floor and requires a margin above it; on softly spoken speech that moves detection
+from 13% of frames to 46%.
+
+The browser's own noise suppression and automatic gain control are **off**. They
+are tuned for voice calls and damage exactly what this depends on — short, quiet,
+fricative-initial words like "three" — before any code here sees the audio.
 
 `auto` routes by clinical context: the grammar recognizer answers while the chart
 is waiting for clinical values, and Whisper answers when the vocabulary has to
