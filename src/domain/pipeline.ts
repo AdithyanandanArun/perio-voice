@@ -267,13 +267,12 @@ export function processUtterance(
     }
   }
 
-  const committed = finish(working, kind, messages.join(' '), {
+  return finish(working, kind, messages.join(' '), {
     changes,
     latencyEligible,
     supersedes,
     compensates,
   });
-  return maybeAutoAdvance(committed, at);
 }
 
 function countCandidates(nodes: ReturnType<typeof buildLattice>): number {
@@ -515,8 +514,10 @@ function applyValues(
   at: number,
   trace: Trace,
 ): Outcome {
-  const { tooth, surface } = session.context;
-  const record = recordAt(session.charts, tooth, surface);
+  const advanced = maybeAdvanceForValues(session, intent, trace);
+  const { tooth, surface } = advanced.context;
+  const record = recordAt(advanced.charts, tooth, surface);
+  session = advanced;
   const verdict = guardIntent(intent, session.context, record);
   if (verdict.outcome === 'reject') {
     trace.add('sequence', 'reject', `${verdict.code}: ${verdict.reason}`);
@@ -711,6 +712,27 @@ function titleCase(value: string): string {
   return value.length === 0 ? value : value[0].toUpperCase() + value.slice(1);
 }
 
+/**
+ * Continuous charting advances lazily: a completed station is only left behind
+ * when the next *measurement* arrives. Advancing eagerly would send a finding
+ * spoken right after the last depth — or a correction to it — to the next tooth,
+ * which is exactly the kind of misplacement this system exists to prevent.
+ */
+function maybeAdvanceForValues(
+  session: ClinicalSession,
+  intent: Extract<Intent, { kind: 'measurements' | 'replace_sequence' }>,
+  trace: Trace,
+): ClinicalSession {
+  if (!session.settings.autoAdvance) return session;
+  if (intent.kind !== 'measurements' || intent.siteIndex !== null) return session;
+  const record = recordAt(session.charts, session.context.tooth, session.context.surface);
+  if (!isStationComplete(record, session.context.measurement)) return session;
+  const move = advanceStation(session.context, session.workflow, session.charts);
+  if (!move.changed) return session;
+  trace.add('commit', 'adjust', move.message);
+  return { ...session, context: move.context, workflow: move.workflow };
+}
+
 /** Recomputes the cursor after any write that can change which sites are open. */
 function refreshPosition(session: ClinicalSession): ClinicalSession {
   const record = recordAt(session.charts, session.context.tooth, session.context.surface);
@@ -718,25 +740,6 @@ function refreshPosition(session: ClinicalSession): ClinicalSession {
     ...session,
     context: { ...session.context, position: nextOpenPosition(record, session.context.measurement) },
   };
-}
-
-function maybeAutoAdvance(session: ClinicalSession, at: number): ClinicalSession {
-  if (!session.settings.autoAdvance) return session;
-  const record = recordAt(session.charts, session.context.tooth, session.context.surface);
-  if (!isStationComplete(record, session.context.measurement)) return session;
-  const move = advanceStation(session.context, session.workflow, session.charts);
-  if (!move.changed) return session;
-  return recordEvent(
-    { ...session, context: move.context, workflow: move.workflow },
-    {
-      kind: 'context',
-      transcript: 'Auto-advance',
-      message: move.message,
-      occurredAt: at,
-      latencyMs: null,
-      trace: [{ stage: 'commit', outcome: 'pass', detail: 'station complete', durationMs: 0 }],
-    },
-  );
 }
 
 export { siteName, entryForSite };

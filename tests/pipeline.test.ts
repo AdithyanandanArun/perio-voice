@@ -162,13 +162,24 @@ describe('auto advance', () => {
     expect(session.context.tooth).toBe(14);
   });
 
-  it('moves to the next station when continuous charting is enabled', () => {
-    const session = processUtterance(
+  it('leaves a finished station only when the next values arrive', () => {
+    let session = processUtterance(
       createInitialSession({ autoAdvance: true }),
       input('three four five'),
     );
+    // The station is complete but the cursor has not moved yet, so a finding or
+    // a correction spoken next still belongs to the tooth just charted.
+    expect(session.context.tooth).toBe(14);
+
+    session = processUtterance(session, input('bleeding'));
+    expect(recordAt(session.charts, 14, 'buccal')).toMatchObject({
+      probingDepths: [3, 4, 5],
+      bleeding: true,
+    });
+
+    session = processUtterance(session, input('two three four'));
     expect(session.context.tooth).toBe(15);
-    expect(recordAt(session.charts, 14, 'buccal').probingDepths).toEqual([3, 4, 5]);
+    expect(recordAt(session.charts, 15, 'buccal').probingDepths).toEqual([2, 3, 4]);
   });
 });
 

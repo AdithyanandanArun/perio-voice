@@ -1,0 +1,2211 @@
+{
+  "version": "2026.09.1",
+  "description": "Clinical evaluation corpus. Every case is a short charting episode written from the failure modes in Full_Problem_Statement.md. Transcripts are what a recognizer hands the clinical layer, including its mistakes; the expectations are what the chart must contain afterwards. Utterances marked chartable:false must never write anything, and the false chart entry rate is measured over exactly those.",
+  "cohorts": [
+    "accent",
+    "ambiguity",
+    "clean",
+    "context",
+    "conversational",
+    "corrections",
+    "multispeaker",
+    "negation",
+    "rapid",
+    "sequence",
+    "terminology"
+  ],
+  "cases": [
+    {
+      "id": "clean-grouped",
+      "cohort": "clean",
+      "note": "a grouped three-site entry fills the station in order",
+      "utterances": [
+        {
+          "text": "three four five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ],
+        "context": {
+          "tooth": 14,
+          "surface": "buccal",
+          "position": 3
+        }
+      }
+    },
+    {
+      "id": "clean-one-at-a-time",
+      "cohort": "clean",
+      "note": "values spoken separately keep their order",
+      "utterances": [
+        {
+          "text": "three"
+        },
+        {
+          "text": "four"
+        },
+        {
+          "text": "five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "clean-depths-and-bleeding",
+      "cohort": "clean",
+      "note": "one utterance carries values and a finding",
+      "utterances": [
+        {
+          "text": "three four five bleeding"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ],
+            "bleeding": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "clean-announced-depths",
+      "cohort": "clean",
+      "note": "an announced measurement type is not read as a value",
+      "utterances": [
+        {
+          "text": "depths three four five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "clean-negated-finding",
+      "cohort": "clean",
+      "note": "values and a negated finding together",
+      "utterances": [
+        {
+          "text": "three four five no bleeding"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ],
+            "bleeding": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "clean-spoken-tooth",
+      "cohort": "clean",
+      "note": "a spoken tooth change then values",
+      "utterances": [
+        {
+          "text": "tooth fifteen"
+        },
+        {
+          "text": "three four five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 15,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ],
+        "context": {
+          "tooth": 15,
+          "surface": "buccal"
+        }
+      }
+    },
+    {
+      "id": "clean-surface-change",
+      "cohort": "clean",
+      "note": "a spoken surface change keeps the tooth",
+      "utterances": [
+        {
+          "text": "lingual"
+        },
+        {
+          "text": "two three four"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "lingual",
+            "probingDepths": [
+              2,
+              3,
+              4
+            ]
+          }
+        ],
+        "context": {
+          "tooth": 14,
+          "surface": "lingual"
+        }
+      }
+    },
+    {
+      "id": "clean-tooth-surface-values",
+      "cohort": "clean",
+      "note": "tooth, surface and values in one utterance",
+      "utterances": [
+        {
+          "text": "tooth sixteen lingual three four five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 16,
+            "surface": "lingual",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ],
+        "context": {
+          "tooth": 16,
+          "surface": "lingual"
+        }
+      }
+    },
+    {
+      "id": "clean-separate-stations",
+      "cohort": "clean",
+      "note": "moving on does not disturb the previous station",
+      "utterances": [
+        {
+          "text": "three four five"
+        },
+        {
+          "text": "tooth fifteen"
+        },
+        {
+          "text": "two three four"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          },
+          {
+            "tooth": 15,
+            "surface": "buccal",
+            "probingDepths": [
+              2,
+              3,
+              4
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "rapid-continuous-two-teeth",
+      "cohort": "rapid",
+      "note": "continuous charting leaves a finished station only when the next values arrive",
+      "start": {
+        "tooth": 1,
+        "surface": "buccal"
+      },
+      "settings": {
+        "autoAdvance": true
+      },
+      "utterances": [
+        {
+          "text": "three four five"
+        },
+        {
+          "text": "two three four"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 1,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          },
+          {
+            "tooth": 2,
+            "surface": "buccal",
+            "probingDepths": [
+              2,
+              3,
+              4
+            ]
+          }
+        ],
+        "context": {
+          "tooth": 2,
+          "surface": "buccal"
+        }
+      }
+    },
+    {
+      "id": "rapid-continuous-three-teeth",
+      "cohort": "rapid",
+      "note": "three stations without a spoken context change",
+      "start": {
+        "tooth": 1,
+        "surface": "buccal"
+      },
+      "settings": {
+        "autoAdvance": true
+      },
+      "utterances": [
+        {
+          "text": "three four five"
+        },
+        {
+          "text": "two three four"
+        },
+        {
+          "text": "four four five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 1,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          },
+          {
+            "tooth": 2,
+            "surface": "buccal",
+            "probingDepths": [
+              2,
+              3,
+              4
+            ]
+          },
+          {
+            "tooth": 3,
+            "surface": "buccal",
+            "probingDepths": [
+              4,
+              4,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "rapid-run-on",
+      "cohort": "rapid",
+      "note": "nine values at once overrun the station and are refused whole",
+      "utterances": [
+        {
+          "text": "three four five two three three four four five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ]
+          }
+        ],
+        "rejections": 1
+      }
+    },
+    {
+      "id": "rapid-with-filler",
+      "cohort": "rapid",
+      "note": "leading filler does not change the reading",
+      "utterances": [
+        {
+          "text": "okay three four five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "rapid-findings-between",
+      "cohort": "rapid",
+      "note": "a finding between two stations stays on its own tooth",
+      "start": {
+        "tooth": 1,
+        "surface": "buccal"
+      },
+      "settings": {
+        "autoAdvance": true
+      },
+      "utterances": [
+        {
+          "text": "three four five"
+        },
+        {
+          "text": "bleeding"
+        },
+        {
+          "text": "two three four"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 1,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ],
+            "bleeding": true
+          },
+          {
+            "tooth": 2,
+            "surface": "buccal",
+            "probingDepths": [
+              2,
+              3,
+              4
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "conv-looks-fine",
+      "cohort": "conversational",
+      "note": "thinking aloud about the tooth",
+      "utterances": [
+        {
+          "text": "okay this looks fine",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ],
+            "bleeding": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "conv-pass-that",
+      "cohort": "conversational",
+      "note": "asking the assistant for an instrument",
+      "utterances": [
+        {
+          "text": "can you pass me that",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ],
+            "bleeding": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "conv-look-later",
+      "cohort": "conversational",
+      "note": "deferring a decision",
+      "utterances": [
+        {
+          "text": "we'll take another look at this later",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ],
+            "bleeding": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "conv-warning",
+      "cohort": "conversational",
+      "note": "warning the patient",
+      "utterances": [
+        {
+          "text": "you might feel some pressure here",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ],
+            "bleeding": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "conv-greeting",
+      "cohort": "conversational",
+      "note": "small talk with the patient",
+      "utterances": [
+        {
+          "text": "how are you doing today",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ],
+            "bleeding": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "conv-number-in-request",
+      "cohort": "conversational",
+      "note": "a request that happens to contain a number",
+      "utterances": [
+        {
+          "text": "can you pass me four instruments",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ],
+            "bleeding": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "conv-suction",
+      "cohort": "conversational",
+      "note": "directing the assistant",
+      "utterances": [
+        {
+          "text": "let's get the suction in there",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ],
+            "bleeding": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "conv-thanks",
+      "cohort": "conversational",
+      "note": "thanking the assistant",
+      "utterances": [
+        {
+          "text": "thanks that was great",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ],
+            "bleeding": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "conv-patient-complaint",
+      "cohort": "conversational",
+      "note": "the patient describing pain by tooth number",
+      "utterances": [
+        {
+          "text": "it hurts around number four",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ],
+            "bleeding": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "conv-scheduling",
+      "cohort": "conversational",
+      "note": "practice logistics",
+      "utterances": [
+        {
+          "text": "we can schedule the next appointment",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ],
+            "bleeding": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "conv-mirror",
+      "cohort": "conversational",
+      "note": "asking for an instrument politely",
+      "utterances": [
+        {
+          "text": "I need the mirror please",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ],
+            "bleeding": null
+          }
+        ]
+      }
+    },
+    {
+      "id": "conv-interleaved",
+      "cohort": "conversational",
+      "note": "conversation between two real measurements changes nothing",
+      "utterances": [
+        {
+          "text": "three four"
+        },
+        {
+          "text": "okay this looks fine",
+          "chartable": false
+        },
+        {
+          "text": "five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "corr-immediate",
+      "cohort": "corrections",
+      "note": "four no three replaces the last value",
+      "utterances": [
+        {
+          "text": "three four five"
+        },
+        {
+          "text": "four no three"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              3
+            ]
+          }
+        ],
+        "context": {
+          "position": 3
+        }
+      }
+    },
+    {
+      "id": "corr-phrased",
+      "cohort": "corrections",
+      "note": "correct that to three",
+      "utterances": [
+        {
+          "text": "three four five"
+        },
+        {
+          "text": "correct that to three"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              3
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "corr-i-meant",
+      "cohort": "corrections",
+      "note": "i meant three",
+      "utterances": [
+        {
+          "text": "three four five"
+        },
+        {
+          "text": "i meant three"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              3
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "corr-mid-station",
+      "cohort": "corrections",
+      "note": "a correction mid-station does not advance the cursor",
+      "utterances": [
+        {
+          "text": "three four"
+        },
+        {
+          "text": "no five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              5,
+              null
+            ]
+          }
+        ],
+        "context": {
+          "position": 2
+        }
+      }
+    },
+    {
+      "id": "corr-sequence-replacement",
+      "cohort": "corrections",
+      "note": "repeat that replaces the whole sequence",
+      "utterances": [
+        {
+          "text": "three three four"
+        },
+        {
+          "text": "repeat that three four four"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              4
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "corr-tooth",
+      "cohort": "corrections",
+      "note": "tooth fourteen sorry fifteen binds the corrected tooth",
+      "utterances": [
+        {
+          "text": "tooth fourteen sorry fifteen"
+        }
+      ],
+      "expect": {
+        "records": [],
+        "context": {
+          "tooth": 15
+        }
+      }
+    },
+    {
+      "id": "corr-undo",
+      "cohort": "corrections",
+      "note": "undo reverses the last write",
+      "utterances": [
+        {
+          "text": "three four five"
+        },
+        {
+          "text": "undo that"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ]
+          }
+        ],
+        "context": {
+          "position": 0
+        }
+      }
+    },
+    {
+      "id": "corr-undo-redo",
+      "cohort": "corrections",
+      "note": "redo reinstates it",
+      "utterances": [
+        {
+          "text": "three four five"
+        },
+        {
+          "text": "undo that"
+        },
+        {
+          "text": "redo"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "corr-undo-twice",
+      "cohort": "corrections",
+      "note": "undo walks back through separate writes",
+      "utterances": [
+        {
+          "text": "three"
+        },
+        {
+          "text": "four"
+        },
+        {
+          "text": "five"
+        },
+        {
+          "text": "undo that"
+        },
+        {
+          "text": "undo that"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              null,
+              null
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "corr-nothing-to-correct",
+      "cohort": "corrections",
+      "note": "a correction with nothing to correct is refused",
+      "utterances": [
+        {
+          "text": "no three"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ]
+          }
+        ],
+        "rejections": 1
+      }
+    },
+    {
+      "id": "neg-positive",
+      "cohort": "negation",
+      "note": "a bare finding is present",
+      "utterances": [
+        {
+          "text": "bleeding"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "bleeding": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "neg-no-bleeding",
+      "cohort": "negation",
+      "note": "no bleeding is absent",
+      "utterances": [
+        {
+          "text": "no bleeding"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "bleeding": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "neg-without",
+      "cohort": "negation",
+      "note": "without bleeding is absent",
+      "utterances": [
+        {
+          "text": "without bleeding"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "bleeding": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "neg-conjunction",
+      "cohort": "negation",
+      "note": "a negation carries across or",
+      "utterances": [
+        {
+          "text": "no bleeding or suppuration"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "bleeding": false,
+            "suppuration": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "neg-independent",
+      "cohort": "negation",
+      "note": "two positive findings stay positive",
+      "utterances": [
+        {
+          "text": "plaque and calculus"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "plaque": true,
+            "calculus": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "neg-clause-break",
+      "cohort": "negation",
+      "note": "a clause break closes the negative scope",
+      "utterances": [
+        {
+          "text": "no bleeding but calculus"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "bleeding": false,
+            "calculus": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "neg-negative-for",
+      "cohort": "negation",
+      "note": "negative for suppuration",
+      "utterances": [
+        {
+          "text": "negative for suppuration"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "suppuration": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "neg-reversal",
+      "cohort": "negation",
+      "note": "a later utterance reverses an earlier finding",
+      "utterances": [
+        {
+          "text": "bleeding"
+        },
+        {
+          "text": "no bleeding"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "bleeding": false
+          }
+        ]
+      }
+    },
+    {
+      "id": "neg-uncertain-held",
+      "cohort": "negation",
+      "note": "a trailing cue is held for confirmation, not charted",
+      "utterances": [
+        {
+          "text": "bleeding no",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "bleeding": null
+          }
+        ],
+        "pending": 1
+      }
+    },
+    {
+      "id": "amb-homophones",
+      "cohort": "ambiguity",
+      "note": "to for ate read as depths",
+      "utterances": [
+        {
+          "text": "to for ate"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              2,
+              4,
+              8
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "amb-accented-digits",
+      "cohort": "ambiguity",
+      "note": "tree and free read as three",
+      "utterances": [
+        {
+          "text": "tree free five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              3,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "amb-tooth-forty",
+      "cohort": "ambiguity",
+      "note": "forty is not a tooth, so it reads as fourteen",
+      "start": {
+        "tooth": 20,
+        "surface": "buccal"
+      },
+      "utterances": [
+        {
+          "text": "tooth forty"
+        }
+      ],
+      "expect": {
+        "records": [],
+        "context": {
+          "tooth": 14
+        }
+      }
+    },
+    {
+      "id": "amb-single-homophone",
+      "cohort": "ambiguity",
+      "note": "one substituted digit fills one site",
+      "utterances": [
+        {
+          "text": "for"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              4,
+              null,
+              null
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "amb-out-of-range",
+      "cohort": "ambiguity",
+      "note": "a literal out-of-range value is refused, not repaired",
+      "utterances": [
+        {
+          "text": "three thirteen five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ]
+          }
+        ],
+        "rejections": 1
+      }
+    },
+    {
+      "id": "amb-no-expectation",
+      "cohort": "ambiguity",
+      "note": "with the station full, the same words are not values",
+      "utterances": [
+        {
+          "text": "three four five"
+        },
+        {
+          "text": "to for ate",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "term-bop",
+      "cohort": "terminology",
+      "note": "the BOP abbreviation",
+      "utterances": [
+        {
+          "text": "b o p"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "bleeding": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "term-pd",
+      "cohort": "terminology",
+      "note": "the PD abbreviation before values",
+      "utterances": [
+        {
+          "text": "p d three four five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "term-tartar",
+      "cohort": "terminology",
+      "note": "tartar is calculus",
+      "utterances": [
+        {
+          "text": "tartar"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "calculus": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "term-furcation-class",
+      "cohort": "terminology",
+      "note": "furcation class two",
+      "utterances": [
+        {
+          "text": "furcation class two"
+        }
+      ],
+      "expect": {
+        "teeth": [
+          {
+            "tooth": 14,
+            "furcation": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "term-mobility-grade",
+      "cohort": "terminology",
+      "note": "mobility grade three",
+      "utterances": [
+        {
+          "text": "mobility grade three"
+        }
+      ],
+      "expect": {
+        "teeth": [
+          {
+            "tooth": 14,
+            "mobility": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "term-recession",
+      "cohort": "terminology",
+      "note": "recession switches the measurement window",
+      "utterances": [
+        {
+          "text": "gingival recession zero one two"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "recession": [
+              0,
+              1,
+              2
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "term-named-site",
+      "cohort": "terminology",
+      "note": "a named site writes directly to it",
+      "utterances": [
+        {
+          "text": "distal buccal five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "term-suppuration",
+      "cohort": "terminology",
+      "note": "suppuration",
+      "utterances": [
+        {
+          "text": "suppuration"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "suppuration": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "term-plaque",
+      "cohort": "terminology",
+      "note": "plaque",
+      "utterances": [
+        {
+          "text": "plaque"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "plaque": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "acc-buccle",
+      "cohort": "accent",
+      "note": "buccal heard as buccle",
+      "start": {
+        "tooth": 14,
+        "surface": "lingual"
+      },
+      "utterances": [
+        {
+          "text": "buccle"
+        },
+        {
+          "text": "three four five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "acc-palatal",
+      "cohort": "accent",
+      "note": "palatal is charted as the lingual surface",
+      "utterances": [
+        {
+          "text": "palatal"
+        },
+        {
+          "text": "two three four"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "lingual",
+            "probingDepths": [
+              2,
+              3,
+              4
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "acc-tree",
+      "cohort": "accent",
+      "note": "a dental fricative heard as tree",
+      "utterances": [
+        {
+          "text": "tree four five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "acc-fur-cation",
+      "cohort": "accent",
+      "note": "furcation split into two words",
+      "utterances": [
+        {
+          "text": "fur cation class one"
+        }
+      ],
+      "expect": {
+        "teeth": [
+          {
+            "tooth": 14,
+            "furcation": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "acc-supperation",
+      "cohort": "accent",
+      "note": "suppuration misspelled by the recognizer",
+      "utterances": [
+        {
+          "text": "supperation"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "suppuration": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "acc-lingal",
+      "cohort": "accent",
+      "note": "lingual heard as lingal",
+      "utterances": [
+        {
+          "text": "lingal three four five"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "lingual",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "spk-clinician",
+      "cohort": "multispeaker",
+      "note": "the enrolled clinician charts normally",
+      "settings": {
+        "requireSpeaker": true
+      },
+      "utterances": [
+        {
+          "text": "three four five",
+          "speaker": "clinician"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "spk-other-values",
+      "cohort": "multispeaker",
+      "note": "another speaker reciting numbers charts nothing",
+      "settings": {
+        "requireSpeaker": true
+      },
+      "utterances": [
+        {
+          "text": "three four five",
+          "speaker": "other",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "spk-patient-complaint",
+      "cohort": "multispeaker",
+      "note": "the patient naming a tooth charts nothing",
+      "settings": {
+        "requireSpeaker": true
+      },
+      "utterances": [
+        {
+          "text": "it hurts around number four",
+          "speaker": "other",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ]
+          }
+        ],
+        "context": {
+          "tooth": 14
+        }
+      }
+    },
+    {
+      "id": "spk-unknown-held",
+      "cohort": "multispeaker",
+      "note": "an unrecognized voice is held for confirmation",
+      "settings": {
+        "requireSpeaker": true
+      },
+      "utterances": [
+        {
+          "text": "three four five",
+          "speaker": "unknown",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ]
+          }
+        ],
+        "pending": 1
+      }
+    },
+    {
+      "id": "spk-override",
+      "cohort": "multispeaker",
+      "note": "a manual attribution override lets it through",
+      "settings": {
+        "requireSpeaker": true
+      },
+      "utterances": [
+        {
+          "text": "three four five",
+          "speaker": "other",
+          "overridden": true
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "spk-not-required",
+      "cohort": "multispeaker",
+      "note": "attribution is ignored when the session does not require it",
+      "utterances": [
+        {
+          "text": "three four five",
+          "speaker": "other"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "ctx-skip",
+      "cohort": "context",
+      "note": "skipping an absent tooth moves past it",
+      "start": {
+        "tooth": 1,
+        "surface": "buccal"
+      },
+      "utterances": [
+        {
+          "text": "skip this tooth"
+        }
+      ],
+      "expect": {
+        "context": {
+          "tooth": 2
+        },
+        "skipped": [
+          1
+        ]
+      }
+    },
+    {
+      "id": "ctx-next",
+      "cohort": "context",
+      "note": "next tooth advances one station",
+      "start": {
+        "tooth": 1,
+        "surface": "buccal"
+      },
+      "utterances": [
+        {
+          "text": "next tooth"
+        }
+      ],
+      "expect": {
+        "context": {
+          "tooth": 2
+        }
+      }
+    },
+    {
+      "id": "ctx-back",
+      "cohort": "context",
+      "note": "go back returns to the previous station",
+      "start": {
+        "tooth": 1,
+        "surface": "buccal"
+      },
+      "utterances": [
+        {
+          "text": "next tooth"
+        },
+        {
+          "text": "go back"
+        }
+      ],
+      "expect": {
+        "context": {
+          "tooth": 1
+        }
+      }
+    },
+    {
+      "id": "ctx-resume",
+      "cohort": "context",
+      "note": "resume returns to the station that was left unfinished",
+      "utterances": [
+        {
+          "text": "three"
+        },
+        {
+          "text": "tooth twenty"
+        },
+        {
+          "text": "resume"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              null,
+              null
+            ]
+          }
+        ],
+        "context": {
+          "tooth": 14,
+          "position": 1
+        }
+      }
+    },
+    {
+      "id": "ctx-stale",
+      "cohort": "context",
+      "note": "a final that observed an older location is refused",
+      "utterances": [
+        {
+          "text": "three four five",
+          "observedVersion": 0,
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ]
+          }
+        ],
+        "rejections": 1
+      }
+    },
+    {
+      "id": "ctx-clear",
+      "cohort": "context",
+      "note": "clear empties the active station",
+      "utterances": [
+        {
+          "text": "three four five"
+        },
+        {
+          "text": "clear that"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ]
+          }
+        ],
+        "context": {
+          "position": 0
+        }
+      }
+    },
+    {
+      "id": "ctx-quadrant",
+      "cohort": "context",
+      "note": "a spoken quadrant moves to its first tooth",
+      "utterances": [
+        {
+          "text": "lower left"
+        }
+      ],
+      "expect": {
+        "context": {
+          "tooth": 17
+        }
+      }
+    },
+    {
+      "id": "ctx-preserved",
+      "cohort": "context",
+      "note": "an earlier station survives a jump away and back",
+      "utterances": [
+        {
+          "text": "three four five"
+        },
+        {
+          "text": "tooth twenty"
+        },
+        {
+          "text": "tooth fourteen"
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ],
+        "context": {
+          "tooth": 14,
+          "position": 3
+        }
+      }
+    },
+    {
+      "id": "seq-overflow",
+      "cohort": "sequence",
+      "note": "a group that overruns the open sites is refused whole",
+      "utterances": [
+        {
+          "text": "three four"
+        },
+        {
+          "text": "five six",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              null
+            ]
+          }
+        ],
+        "context": {
+          "position": 2
+        },
+        "rejections": 1
+      }
+    },
+    {
+      "id": "seq-inserted-value",
+      "cohort": "sequence",
+      "note": "a duplicated value overruns the station and is refused",
+      "utterances": [
+        {
+          "text": "three four five five",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              null,
+              null,
+              null
+            ]
+          }
+        ],
+        "rejections": 1
+      }
+    },
+    {
+      "id": "seq-dropped-value-gap",
+      "cohort": "sequence",
+      "note": "a dropped value leaves a gap the next tooth cannot fill",
+      "utterances": [
+        {
+          "text": "three five"
+        },
+        {
+          "text": "two three four",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              5,
+              null
+            ]
+          }
+        ],
+        "rejections": 1
+      }
+    },
+    {
+      "id": "seq-station-complete",
+      "cohort": "sequence",
+      "note": "a finished station refuses a further value",
+      "utterances": [
+        {
+          "text": "three four five"
+        },
+        {
+          "text": "four",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ],
+        "rejections": 1
+      }
+    },
+    {
+      "id": "seq-overwrite-held",
+      "cohort": "sequence",
+      "note": "overwriting a named site is confirmed, not applied",
+      "utterances": [
+        {
+          "text": "three four five"
+        },
+        {
+          "text": "mesial buccal six",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "seq-replacement-length",
+      "cohort": "sequence",
+      "note": "a replacement of the wrong length is refused",
+      "utterances": [
+        {
+          "text": "three four five"
+        },
+        {
+          "text": "repeat that three four",
+          "chartable": false
+        }
+      ],
+      "expect": {
+        "records": [
+          {
+            "tooth": 14,
+            "surface": "buccal",
+            "probingDepths": [
+              3,
+              4,
+              5
+            ]
+          }
+        ],
+        "rejections": 1
+      }
+    }
+  ]
+}
