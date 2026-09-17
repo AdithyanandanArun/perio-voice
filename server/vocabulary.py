@@ -133,6 +133,10 @@ MEASUREMENT_WORDS: Final[tuple[str, ...]] = (
 
 """Findings.
 
+`pus` and `mobile` are deliberately absent. `mobile` is a near-homophone of
+`labial` and won, so naming a surface charted a mobility finding; `mobility` is
+the term clinicians use and is in the grammar.
+
 `pus` is deliberately absent. It is short and collides with ordinary speech --
 "can you pass me that" was recognized as "pus meant that", which would have
 written a suppuration finding out of a request to an assistant. `suppuration` is
@@ -150,13 +154,19 @@ FINDING_WORDS: Final[tuple[str, ...]] = (
     "calculus",
     "tartar",
     "mobility",
-    "mobile",
     "recession",
 )
 
+"""Anatomy.
+
+`teeth` is deliberately absent. It adds nothing — clinicians say "tooth
+fifteen", and the browser lexicon folds the plural into `tooth` anyway — while
+inside the grammar it competed with and won against `skip`, turning "skip" into
+"teeth". Removing it downgrades that to a miss, and a miss charts nothing
+whereas a substitution charts the wrong thing.
+"""
 ANATOMY_WORDS: Final[tuple[str, ...]] = (
     "tooth",
-    "teeth",
     "number",
     "buccal",
     "lingual",
