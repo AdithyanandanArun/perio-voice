@@ -187,29 +187,29 @@ Scope: Milestone 1 delivered active local Faster-Whisper recognition and a deter
 
 ## Milestone 4 — recognition quality under real use
 
-- [ ] G35: no grammar forces a legitimate clinical word onto a different word, so narrowing can never substitute rather than bias
+- [x] G35: no grammar forces a legitimate clinical word onto a different word, so narrowing can never substitute rather than bias
   CHECK: uv run python scripts/verify_no_forced_substitution.py
   EXPECT: NO_FORCED_SUBSTITUTION_GATE_PASSED
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=3ffcc6380d61ddc170afad66871b1d57819ea6bdb73a23762a428f57970d096d; exit=0; EXPECT=matched; output-sha256=85fb9a1e83d1d0f097175cbf3857bc00746625be0c12b2caedc695978be6b1f8; output-bytes=204; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
 
-- [ ] G36: acoustically confusable clinical words are each recognized as themselves rather than as their competitor
+- [x] G36: acoustically confusable clinical words are each recognized as themselves rather than as their competitor
   CHECK: uv run python scripts/verify_confusable_pairs.py
   EXPECT: CONFUSABLE_PAIRS_GATE_PASSED
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=683ff138e92499bfdb3037b7aa6d4b6af29ab9edf97db5fcb9481c4cf1b6c245; exit=0; EXPECT=matched; output-sha256=a5098bee03416439f7946216c96a7ce917bcdc680df653a5687d6cb7e3525ac3; output-bytes=157; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
 
-- [ ] G37: the recognizer offers alternatives for low-confidence words so the clinical context can resolve them
+- [x] G37: the recognizer offers alternatives for low-confidence words so the clinical context can resolve them
   CHECK: uv run python scripts/verify_alternatives.py
   EXPECT: ALTERNATIVES_GATE_PASSED
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=15954a0c6eb1cbe30a6fdec21e17342e4cf1de2c986dd5e9cae8a51c124e33d9; exit=0; EXPECT=matched; output-sha256=f89c36c3a57bf6ba0d238631601b7e8c171f852bd6d4fedad5e82655ab76fff9; output-bytes=304; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
 
-- [ ] G38: recognition of spoken dental phrases meets the raised accuracy bar end to end
+- [x] G38: recognition of spoken dental phrases meets the raised accuracy bar end to end
   CHECK: uv run python scripts/evaluate_recognizers.py --gate
   EXPECT: RECOGNIZER_GATE_PASSED
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=9097f9ffb3766b3f76193a7c1c859d6c7883b7527d2dd2d7ef27fdc38152c0d7; exit=0; EXPECT=matched; output-sha256=c46533242e52ad27b404419fe42ee853e0270f66184a9830de964fbf57798152; output-bytes=304; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
 
-- [ ] G39: quiet speech is detected as speech, and room noise alone is not, without either being configured
+- [x] G39: quiet speech is detected as speech, and room noise alone is not, without either being configured
   CHECK: uv run python scripts/verify_speech_detection.py
   EXPECT: SPEECH_DETECTION_GATE_PASSED
-  EVIDENCE: pending
+  EVIDENCE: automatic-evidence=v1; definition-sha256=b7a59e212c7534087afe5d7103e797e6c339a77fae7537ba231071a86467a97b; exit=0; EXPECT=matched; output-sha256=db2c4c8196c574dabe7212d41290087951dddd6f0f839db9f97afe6d7ceaa84b; output-bytes=651; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
 
 ABANDON: G33 The speaker profile does not separate voices at the durations this product uses, so no threshold can satisfy this gate. Measured against a six-second enrollment: at 0.5 s the enrolled speaker scored 0.7662 while another voice scored 0.9627, an inverted margin of -0.1965; separation only appears around four seconds, and a rolling four-second window still leaves +0.0007 on clean single-speaker audio. The original +0.0507 margin was measured on 5.5 s against 5.5 s, which is not the comparison the product makes. G31 and G32 fix the two real defects (enrollment now completes from one ordinary take, short utterances now reach a decision) and both pass. Discrimination needs a trained speaker-embedding model behind the same interface; attribution stays off by default and ARCHITECTURE.md and EVALUATION.md both state that it does not work.
