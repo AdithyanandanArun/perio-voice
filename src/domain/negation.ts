@@ -134,11 +134,14 @@ export interface NegationResult {
   assertions: FindingAssertion[];
   /** Token indices consumed by findings, so the grammar does not reuse them. */
   consumed: Set<number>;
+  /** Indices of words used as negation cues, so they are not read as corrections. */
+  cues: Set<number>;
 }
 
 export function resolveAssertions(tokens: readonly ResolvedToken[]): NegationResult {
   const assertions: FindingAssertion[] = [];
   const consumed = new Set<number>();
+  const cues = new Set<number>();
 
   let scopeCue: string | null = null;
   let scopeIndex: number | null = null;
@@ -172,6 +175,7 @@ export function resolveAssertions(tokens: readonly ResolvedToken[]): NegationRes
       }
       scopeCue = cue.cue;
       scopeIndex = index;
+      for (let offset = 0; offset < cue.length; offset += 1) cues.add(index + offset);
       scopeDistance = 0;
       scopeConfidence = CONFIDENCE_ADJACENT;
       doubled = false;
@@ -219,16 +223,21 @@ export function resolveAssertions(tokens: readonly ResolvedToken[]): NegationRes
     if (scopeDistance > MAX_SCOPE_DISTANCE) closeScope();
   }
 
-  applyTrailingCue(tokens, assertions);
-  return { assertions, consumed };
+  applyTrailingCue(tokens, assertions, cues);
+  return { assertions, consumed, cues };
 }
 
 /** "Bleeding, no" reverses the finding it follows, at reduced confidence. */
-function applyTrailingCue(tokens: readonly ResolvedToken[], assertions: FindingAssertion[]): void {
+function applyTrailingCue(
+  tokens: readonly ResolvedToken[],
+  assertions: FindingAssertion[],
+  cues: Set<number>,
+): void {
   const last = tokens[tokens.length - 1];
   if (last === undefined || !SINGLE_CUES.has(last.token) || assertions.length === 0) return;
   const target = assertions[assertions.length - 1];
   if (target.scopeEnd >= tokens.length - 1 || target.polarity === 'negative') return;
+  cues.add(tokens.length - 1);
   assertions[assertions.length - 1] = {
     ...target,
     polarity: 'negative',

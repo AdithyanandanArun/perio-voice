@@ -355,6 +355,21 @@ export const LEXICON: readonly LexiconEntry[] = [
     contextual: ['repeat'],
   },
   {
+    canonical: 'correct',
+    category: 'command',
+    safe: [
+      'correct that to',
+      'correct that',
+      'change that to',
+      'change it to',
+      'make that',
+      'make it',
+      'i meant',
+      'correction',
+    ],
+    contextual: ['correct'],
+  },
+  {
     canonical: 'confirm',
     category: 'command',
     safe: ['confirm', 'confirmed', 'that is right', "that's right", 'yes confirm'],
