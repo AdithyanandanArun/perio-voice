@@ -319,15 +319,11 @@ def load_manifest(path: Path) -> DentalManifest:
         for utterance_index, raw_utterance in enumerate(raw_utterances):
             utterance_location = f"{location}.utterances[{utterance_index}]"
             utterance = _object(raw_utterance, utterance_location)
-            utterance_id = _filesystem_safe_id(
-                utterance.get("id"), f"{utterance_location}.id"
-            )
+            utterance_id = _filesystem_safe_id(utterance.get("id"), f"{utterance_location}.id")
             if utterance_id in utterance_ids:
                 raise ManifestError(f"duplicate global utterance id: {utterance_id}")
             utterance_ids.add(utterance_id)
-            prompt = _non_empty_string(
-                utterance.get("prompt"), f"{utterance_location}.prompt"
-            )
+            prompt = _non_empty_string(utterance.get("prompt"), f"{utterance_location}.prompt")
             chartable_value = utterance.get("chartable", True)
             if not isinstance(chartable_value, bool):
                 raise ManifestError(f"{utterance_location}.chartable must be a boolean")
@@ -641,9 +637,7 @@ def evaluate_configuration(
     """Decode one runtime configuration in manifest order."""
     if inventory.missing and not allow_missing:
         raise MissingAudioError(
-            missing_audio_report(
-                manifest, manifest_path, audio_root, inventory, (config,)
-            )
+            missing_audio_report(manifest, manifest_path, audio_root, inventory, (config,))
         )
 
     durations: dict[tuple[str, str], int] = {}
@@ -659,9 +653,7 @@ def evaluate_configuration(
         if model is None:  # pragma: no cover - guarded by the files lookup
             raise AssertionError("model was not loaded for a discovered recording")
         audio = audio_decoder(recording_path, manifest.sample_rate)
-        results.append(
-            decode_recording(model, audio, key, config, durations[key.identity()])
-        )
+        results.append(decode_recording(model, audio, key, config, durations[key.identity()]))
 
     runtime = config.as_json()
     return {
@@ -820,9 +812,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             bias_mode=bias,
         )
         configurations = build_sweep_plan(base) if arguments.sweep_models else (base,)
-        plan = missing_audio_report(
-            manifest, manifest_path, audio_root, inventory, configurations
-        )
+        plan = missing_audio_report(manifest, manifest_path, audio_root, inventory, configurations)
         output_path = cast(Path | None, arguments.json)
         if arguments.plan:
             if output_path is not None:

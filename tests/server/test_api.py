@@ -205,21 +205,20 @@ def test_fixture_capture_route_is_physically_absent_without_exact_opt_in(
 ) -> None:
     monkeypatch.delenv("PERIO_FIXTURE_CAPTURE", raising=False)
     disabled = create_app(FakeRecognizer(), Settings())
-    assert "/api/fixture" not in {
-        route.path for route in disabled.routes
-    }
+    assert "/api/fixture" not in {route.path for route in disabled.routes}
     with TestClient(disabled) as client:
-        assert client.post(
-            "/api/fixture?pass=quiet&id=acc-buccle-u01", content=pcm_frame(0.1)
-        ).status_code == 404
+        assert (
+            client.post(
+                "/api/fixture?pass=quiet&id=acc-buccle-u01", content=pcm_frame(0.1)
+            ).status_code
+            == 404
+        )
 
     # Truthy-looking values are deliberately insufficient: operators must use
     # the documented exact switch before the upload surface exists.
     monkeypatch.setenv("PERIO_FIXTURE_CAPTURE", "true")
     not_exact = create_app(FakeRecognizer(), Settings())
-    assert "/api/fixture" not in {
-        route.path for route in not_exact.routes
-    }
+    assert "/api/fixture" not in {route.path for route in not_exact.routes}
 
 
 def test_fixture_capture_writes_private_16khz_mono_wav(
@@ -230,9 +229,7 @@ def test_fixture_capture_writes_private_16khz_mono_wav(
     monkeypatch.setenv("PERIO_FIXTURE_CAPTURE", "1")
     monkeypatch.setattr("server.app.FIXTURE_AUDIO_DIR", destination)
     enabled = create_app(FakeRecognizer(), Settings())
-    assert "/api/fixture" in {
-        route.path for route in enabled.routes
-    }
+    assert "/api/fixture" in {route.path for route in enabled.routes}
 
     pcm = pcm_frame(0.2, milliseconds=125)
     with TestClient(enabled) as client:
