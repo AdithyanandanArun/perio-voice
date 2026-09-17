@@ -6,7 +6,7 @@ import reactHooks from 'eslint-plugin-react-hooks';
 import reactRefresh from 'eslint-plugin-react-refresh';
 
 export default [
-  { ignores: ['dist/**', 'node_modules/**', 'graphify-out/**'] },
+  { ignores: ['dist/**', 'node_modules/**', 'graphify-out/**', '.venv/**', 'models/**', 'evaluation/fixtures/**'] },
   js.configs.recommended,
   {
     files: ['scripts/**/*.mjs'],
