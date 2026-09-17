@@ -27,33 +27,47 @@ mixture would count the attenuated speech as extra noise. Every generator is
 deterministic given its seed, so two profiles are always compared on identical
 audio.
 
-### Current result (tiny.en, CPU INT8, 15/5/0 dB bands)
+### Current result (tiny.en, CPU INT8, 15/5/0 dB bands, two noise realizations each)
 
 | profile | clean WER | mean noisy WER | worst band WER |
 | --- | ---: | ---: | ---: |
-| none | 0.000 | 0.212 | 0.523 |
-| highpass | 0.091 | 0.121 | 0.295 |
-| spectral | 0.091 | 0.144 | 0.295 |
+| none | 0.000 | 0.146 | 0.324 |
+| highpass | 0.091 | 0.140 | 0.324 |
+| spectral | 0.091 | 0.146 | 0.278 |
 
-The high-pass profile nearly halves error under noise. It is still not the
-default, and the reason is worth stating precisely: its clean regression is not a
-metric artifact but a hallucinated trailing `Thank you.`, a well-known Whisper
-failure mode that the filtered near-silence tail triggers. In charting, an
-inserted phrase is a false-entry risk, and clean speech is the common case.
+The honest reading is that **no preprocessing profile is measurably better here**.
+The three sit within 0.006 mean word error of each other, which is far below this
+fixture's resolution: its reference transcript is 22 words, so a single word
+error is 0.045 on one mixture. `none` stays the default because it is the only
+one with no clean regression.
 
-The gate encodes that policy rather than leaving it to memory. It fails if:
+That regression is worth naming precisely, because it is not a metric artifact:
+both filtered profiles emit a hallucinated trailing `Thank you.` on clean speech,
+a well-known Whisper failure mode that the filtered near-silence tail triggers.
+In charting, an inserted phrase is a false-entry risk.
+
+An earlier version of this table reported high-pass nearly halving noisy error.
+That was wrong, and the way it was wrong is the reason this section exists. The
+harness seeded its noise generators from `hash(source)`, and Python salts string
+hashing per process, so every run tested different noise and the table moved
+between runs. Seeds are now fixed constants and each condition is measured at two
+realizations; two consecutive runs produce byte-identical tables. The apparent
+advantage was one lucky draw.
+
+The gate encodes the promotion policy rather than leaving it to memory. It fails
+if:
 
 - clean word error exceeds 0.15, meaning the recognizer is not healthy enough for
   any noise result to mean anything;
 - the worst SNR band fails to degrade recognition at all, which would mean the
   harness is not exercising the mixture it reports — a negative control on the
   harness itself;
-- another profile beats the configured one by more than 0.02 mean noisy WER
-  *without* costing more than 0.02 on clean speech, in which case it should be
+- another profile beats the configured one by more than 0.03 mean noisy WER
+  *without* costing more than 0.03 on clean speech, in which case it should be
   promoted deliberately.
 
-A profile that trades clean accuracy for noisy accuracy is reported as a `NOTE:`
-and kept available, not silently adopted.
+The 0.03 margin is set above the fixture's measurement resolution on purpose. A
+tighter margin would make the gate flip on noise rather than on evidence.
 
 ### What this does and does not establish
 

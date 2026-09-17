@@ -41,13 +41,22 @@ REFERENCE = Path("tests/fixtures/jfk.txt")
 
 NOISE_SOURCES = ("suction", "handpiece", "babble", "hvac")
 SNR_BANDS_DB = (15.0, 5.0, 0.0)
+"""Fixed seeds, not derived ones: `hash()` is salted per process, so deriving a
+seed from the source name would silently test different noise every run and make
+the report irreproducible. Two realizations per condition keep one unlucky draw
+from deciding a promotion."""
+NOISE_SEEDS = (1_129, 7_741)
 
 """Clean speech must decode this well before any noise result means anything."""
 MAX_CLEAN_WER = 0.15
-"""A profile has to beat the configured default by this much to be promotable."""
-PROMOTION_MARGIN = 0.02
+"""A profile has to beat the configured default by this much to be promotable.
+
+One word error on this fixture is 1/22 of its transcript, so a difference smaller
+than a few hundredths averaged across the matrix is not evidence of anything.
+"""
+PROMOTION_MARGIN = 0.03
 """...and must not cost more than this on clean speech, which is the common case."""
-CLEAN_REGRESSION_TOLERANCE = 0.02
+CLEAN_REGRESSION_TOLERANCE = 0.03
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +64,7 @@ class Measurement:
     profile: str
     noise: str
     snr_db: float
+    seed: int
     measured_snr_db: float
     wer: float
     decode_ms: int
@@ -75,27 +85,30 @@ async def measure(
                 profile.value,
                 "clean",
                 float("inf"),
+                0,
                 float("inf"),
                 word_error_rate(reference, outcome.text),
                 outcome.decode_ms,
             )
         )
         for source in NOISE_SOURCES:
-            noise = synthesize(source, speech.size, settings.sample_rate, seed=hash(source) % 9973)
-            for snr in SNR_BANDS_DB:
-                mixture = mix_at_snr(speech, noise, snr)
-                processed = apply_profile(mixture.audio, settings.sample_rate, profile)
-                decoded = await recognizer.transcribe(processed, partial=False)
-                results.append(
-                    Measurement(
-                        profile.value,
-                        source,
-                        snr,
-                        round(measured_snr_db(speech, mixture), 2),
-                        word_error_rate(reference, decoded.text),
-                        decoded.decode_ms,
+            for seed in NOISE_SEEDS:
+                noise = synthesize(source, speech.size, settings.sample_rate, seed=seed)
+                for snr in SNR_BANDS_DB:
+                    mixture = mix_at_snr(speech, noise, snr)
+                    processed = apply_profile(mixture.audio, settings.sample_rate, profile)
+                    decoded = await recognizer.transcribe(processed, partial=False)
+                    results.append(
+                        Measurement(
+                            profile.value,
+                            source,
+                            snr,
+                            seed,
+                            round(measured_snr_db(speech, mixture), 2),
+                            word_error_rate(reference, decoded.text),
+                            decoded.decode_ms,
+                        )
                     )
-                )
     return results
 
 
