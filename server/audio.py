@@ -64,6 +64,9 @@ class SpeechSegmenter:
         # Mutable so the cadence controller can move the endpoint inside its
         # safe band without rebuilding the segmenter mid-stream.
         self.end_silence_ms = settings.end_silence_ms
+        # Tracks the quietest recent audio so the speech threshold can sit a
+        # fixed margin above the room rather than at a fixed absolute level.
+        self._noise_floor = settings.vad_rms_threshold
         self._pre_roll: deque[tuple[FloatAudio, float]] = deque()
         self._pre_roll_samples = 0
         self._speech_chunks: list[FloatAudio] = []
@@ -83,7 +86,7 @@ class SpeechSegmenter:
         audio = decode_pcm16(payload)
         duration_ms = len(audio) / self.settings.sample_rate * 1_000
         frame_started_at = received_at_ms - duration_ms
-        voiced = rms_level(audio) >= self.settings.vad_rms_threshold
+        voiced = self._is_voiced(rms_level(audio))
         events: list[SegmenterEvent] = []
 
         if not self._in_speech:
@@ -128,6 +131,34 @@ class SpeechSegmenter:
             self._since_partial_samples = 0
             events.append(self._snapshot(DecodeKind.PARTIAL, received_at_ms))
         return events
+
+    def _is_voiced(self, level: float) -> bool:
+        """Speech is judged against the room, not against a fixed number.
+
+        A single absolute threshold has to be set for one microphone at one
+        distance. Measured on real continuous speech, the tenth percentile of
+        frame level fell *below* the configured threshold, so the quietest tenth
+        of genuine speech was being classified as silence — which clips word
+        onsets and ends utterances early. Tracking the noise floor and requiring
+        a margin above it adapts to a quiet speaker, a distant microphone and a
+        noisy room without any of them needing to be configured.
+        """
+        threshold = max(
+            self.settings.vad_rms_threshold, self._noise_floor * self.settings.vad_margin
+        )
+        voiced = level >= threshold
+        if not voiced:
+            # Adapt upward slowly and downward quickly: a room that gets louder
+            # should not silence the clinician, but a room that goes quiet should
+            # let a quiet voice through promptly.
+            weight = 0.05 if level > self._noise_floor else 0.5
+            self._noise_floor += weight * (level - self._noise_floor)
+            self._noise_floor = max(self._noise_floor, 1e-6)
+        return voiced
+
+    @property
+    def noise_floor(self) -> float:
+        return self._noise_floor
 
     def flush(self, received_at_ms: float) -> DecodeRequest | None:
         if not self._in_speech or not self._speech_chunks:

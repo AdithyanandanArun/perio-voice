@@ -31,7 +31,11 @@ class Settings:
     compute_type: str = "int8"
     language: str = "en"
     sample_rate: int = 16_000
-    vad_rms_threshold: float = 0.012
+    """Absolute floor, so a silent room cannot make the relative threshold
+    collapse onto its own noise."""
+    vad_rms_threshold: float = 0.004
+    """Speech must exceed the tracked noise floor by this factor."""
+    vad_margin: float = 3.0
     pre_roll_ms: int = 200
     min_speech_ms: int = 180
     end_silence_ms: int = 520
@@ -70,6 +74,8 @@ class Settings:
             raise ValueError("ASR_SAMPLE_RATE must be 16000 to match protocol v1.")
         if not 0 < self.vad_rms_threshold < 1:
             raise ValueError("ASR_VAD_RMS_THRESHOLD must be between 0 and 1.")
+        if self.vad_margin < 1:
+            raise ValueError("ASR_VAD_MARGIN must be at least 1.")
         if self.pre_roll_ms < 0:
             raise ValueError("ASR_PRE_ROLL_MS cannot be negative.")
         if min(self.min_speech_ms, self.end_silence_ms, self.partial_interval_ms) <= 0:
@@ -115,7 +121,8 @@ class Settings:
             compute_type=os.getenv("ASR_COMPUTE_TYPE", "int8"),
             language=os.getenv("ASR_LANGUAGE", "en"),
             sample_rate=_env_int("ASR_SAMPLE_RATE", 16_000),
-            vad_rms_threshold=_env_float("ASR_VAD_RMS_THRESHOLD", 0.012),
+            vad_rms_threshold=_env_float("ASR_VAD_RMS_THRESHOLD", 0.004),
+            vad_margin=_env_float("ASR_VAD_MARGIN", 3.0),
             pre_roll_ms=_env_int("ASR_PRE_ROLL_MS", 200),
             min_speech_ms=_env_int("ASR_MIN_SPEECH_MS", 180),
             end_silence_ms=_env_int("ASR_END_SILENCE_MS", 520),

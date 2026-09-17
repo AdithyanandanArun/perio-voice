@@ -207,4 +207,9 @@ Scope: Milestone 1 delivered active local Faster-Whisper recognition and a deter
   EXPECT: RECOGNIZER_GATE_PASSED
   EVIDENCE: pending
 
+- [ ] G39: quiet speech is detected as speech, and room noise alone is not, without either being configured
+  CHECK: uv run python scripts/verify_speech_detection.py
+  EXPECT: SPEECH_DETECTION_GATE_PASSED
+  EVIDENCE: pending
+
 ABANDON: G33 The speaker profile does not separate voices at the durations this product uses, so no threshold can satisfy this gate. Measured against a six-second enrollment: at 0.5 s the enrolled speaker scored 0.7662 while another voice scored 0.9627, an inverted margin of -0.1965; separation only appears around four seconds, and a rolling four-second window still leaves +0.0007 on clean single-speaker audio. The original +0.0507 margin was measured on 5.5 s against 5.5 s, which is not the comparison the product makes. G31 and G32 fix the two real defects (enrollment now completes from one ordinary take, short utterances now reach a decision) and both pass. Discrimination needs a trained speaker-embedding model behind the same interface; attribution stays off by default and ARCHITECTURE.md and EVALUATION.md both state that it does not work.
