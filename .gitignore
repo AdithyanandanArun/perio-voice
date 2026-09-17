@@ -9,6 +9,7 @@ __pycache__/
 *.py[cod]
 .DS_Store
 coverage/
+evaluation/fixtures/dental/audio/
 .unlazy/
 .unlazy-hook-state.json
 .claude/settings.local.json

@@ -1,5 +1,6 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { captureSeconds } from '../src/speech/capture';
 import { asrWebSocketUrl, parseServerMessage } from '../src/speech/protocol';
 import { useLocalAsr } from '../src/speech/useLocalAsr';
 
@@ -97,6 +98,13 @@ function ready(socket: MockWebSocket) {
       computeType: 'int8',
     });
   });
+}
+
+async function waitForCaptureGraph() {
+  for (let attempt = 0; attempt < 12 && !MockAudioWorkletNode.instance; attempt += 1) {
+    await Promise.resolve();
+  }
+  expect(MockAudioWorkletNode.instance).not.toBeNull();
 }
 
 beforeEach(() => {
@@ -253,5 +261,55 @@ describe('ASR protocol helpers', () => {
     expect(parseServerMessage('{"type":"partial","text":"three"}')?.text).toBe('three');
     expect(parseServerMessage('{bad')).toBeNull();
     expect(parseServerMessage('[]')).toBeNull();
+  });
+});
+
+describe('shared worklet capture', () => {
+  it('returns worklet PCM and releases the full audio graph after the requested duration', async () => {
+    vi.useFakeTimers();
+    installAudioEnvironment();
+    const onLevel = vi.fn();
+    const recording = captureSeconds(1, { onLevel });
+    await waitForCaptureGraph();
+
+    const pcm = new Uint8Array([1, 0, 2, 0]).buffer;
+    MockAudioWorkletNode.instance?.port.onmessage?.({
+      data: { pcm, level: 0.2 },
+    } as MessageEvent<{ pcm: ArrayBuffer; level: number }>);
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    const blob = await recording;
+    expect(blob.size).toBe(pcm.byteLength);
+    expect(blob.type).toBe('application/octet-stream');
+    expect(onLevel).toHaveBeenNthCalledWith(1, 0.2);
+    expect(onLevel).toHaveBeenLastCalledWith(0);
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(sourceNode.disconnect).toHaveBeenCalledOnce();
+    expect(MockAudioWorkletNode.instance?.disconnect).toHaveBeenCalledOnce();
+    expect(muteNode.disconnect).toHaveBeenCalledOnce();
+    expect(MockAudioContext.instance?.close).toHaveBeenCalledOnce();
+  });
+
+  it('aborts worklet capture and still releases every acquired resource', async () => {
+    installAudioEnvironment();
+    const controller = new AbortController();
+    const recording = captureSeconds(10, { signal: controller.signal });
+    await waitForCaptureGraph();
+
+    controller.abort();
+    await expect(recording).rejects.toMatchObject({ name: 'AbortError' });
+    expect(stopTrack).toHaveBeenCalledOnce();
+    expect(sourceNode.disconnect).toHaveBeenCalledOnce();
+    expect(MockAudioWorkletNode.instance?.disconnect).toHaveBeenCalledOnce();
+    expect(muteNode.disconnect).toHaveBeenCalledOnce();
+    expect(MockAudioContext.instance?.close).toHaveBeenCalledOnce();
+  });
+
+  it('rejects unsafe durations before asking for microphone access', async () => {
+    installAudioEnvironment();
+    const getUserMedia = vi.mocked(navigator.mediaDevices.getUserMedia);
+    await expect(captureSeconds(0)).rejects.toThrow(/duration/i);
+    await expect(captureSeconds(31)).rejects.toThrow(/duration/i);
+    expect(getUserMedia).not.toHaveBeenCalled();
   });
 });

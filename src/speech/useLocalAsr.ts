@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { SpeakerVerdict } from '../domain/types';
+import { captureSeconds } from './capture';
 import {
   ASR_PROTOCOL_VERSION,
   TARGET_SAMPLE_RATE,
@@ -58,14 +59,6 @@ interface CaptureResources {
   mute: GainNode;
 }
 
-type AudioContextConstructor = typeof AudioContext;
-
-declare global {
-  interface Window {
-    webkitAudioContext?: AudioContextConstructor;
-  }
-}
-
 export function supportsLocalAudioCapture(): boolean {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
   const Context = window.AudioContext ?? window.webkitAudioContext;
@@ -102,6 +95,7 @@ export function useLocalAsr({ onFinal, contextVersion }: UseLocalAsrOptions): Lo
   const connectRef = useRef<() => void>(() => undefined);
   const mountedRef = useRef(false);
   const onFinalRef = useRef(onFinal);
+  const enrollmentCaptureRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     onFinalRef.current = onFinal;
@@ -369,57 +363,23 @@ export function useLocalAsr({ onFinal, contextVersion }: UseLocalAsrOptions): Lo
     }
   }, []);
 
-  /**
-   * Records a short sample from the microphone without involving the recognizer.
-   * Enrollment audio is posted straight to the local service and is never part
-   * of a recognition stream.
-   */
-  const captureSeconds = useCallback(async (seconds: number): Promise<Blob> => {
-    const Context = window.AudioContext ?? window.webkitAudioContext;
-    if (!Context) throw new Error('AudioContext is unavailable.');
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: false },
-    });
-    const context = new Context({ latencyHint: 'interactive' });
-    const chunks: ArrayBuffer[] = [];
-    try {
-      await context.audioWorklet.addModule('/audio/pcm-capture-worklet.js');
-      const source = context.createMediaStreamSource(stream);
-      const worklet = new AudioWorkletNode(context, 'pcm-capture-processor', {
-        processorOptions: { targetSampleRate: TARGET_SAMPLE_RATE, batchMs: 100 },
-      });
-      const mute = context.createGain();
-      mute.gain.value = 0;
-      worklet.port.onmessage = (event: MessageEvent<{ pcm: ArrayBuffer; level: number }>) => {
-        chunks.push(event.data.pcm);
-        setAudioLevel(Math.min(1, event.data.level * 4));
-      };
-      source.connect(worklet);
-      worklet.connect(mute);
-      mute.connect(context.destination);
-      await context.resume();
-      await new Promise((resolve) => window.setTimeout(resolve, seconds * 1_000));
-      worklet.port.onmessage = null;
-      source.disconnect();
-      worklet.disconnect();
-      mute.disconnect();
-    } finally {
-      for (const track of stream.getTracks()) track.stop();
-      void context.close();
-      setAudioLevel(0);
-    }
-    return new Blob(chunks, { type: 'application/octet-stream' });
-  }, []);
-
   const enroll = useCallback(async (seconds = ENROLLMENT_SECONDS) => {
     if (!supported) {
       setError('Speaker enrollment needs microphone access, which is unavailable here.');
       return;
     }
+    enrollmentCaptureRef.current?.abort();
+    const controller = new AbortController();
+    enrollmentCaptureRef.current = controller;
     setEnrolling(true);
     setError(null);
     try {
-      const sample = await captureSeconds(seconds);
+      const sample = await captureSeconds(seconds, {
+        signal: controller.signal,
+        onLevel: (level) => {
+          if (mountedRef.current) setAudioLevel(Math.min(1, level * 4));
+        },
+      });
       const response = await fetch('/api/speaker/enroll', { method: 'POST', body: sample });
       const state = (await response.json()) as EnrollmentState & { error?: string };
       if (!response.ok) {
@@ -427,12 +387,16 @@ export function useLocalAsr({ onFinal, contextVersion }: UseLocalAsrOptions): Lo
       }
       if (mountedRef.current) setEnrollment({ ...state });
     } catch (reason) {
+      if (reason instanceof DOMException && reason.name === 'AbortError') return;
       const detail = reason instanceof Error ? reason.message : 'microphone or service failure';
       setError(`Speaker enrollment could not complete: ${detail}`);
     } finally {
-      if (mountedRef.current) setEnrolling(false);
+      if (enrollmentCaptureRef.current === controller) {
+        enrollmentCaptureRef.current = null;
+        if (mountedRef.current) setEnrolling(false);
+      }
     }
-  }, [captureSeconds, supported]);
+  }, [supported]);
 
   const revokeEnrollment = useCallback(async () => {
     try {
@@ -466,6 +430,8 @@ export function useLocalAsr({ onFinal, contextVersion }: UseLocalAsrOptions): Lo
         socket.onclose = null;
         socket.close();
       }
+      enrollmentCaptureRef.current?.abort();
+      enrollmentCaptureRef.current = null;
       releaseCapture(false);
     };
   }, [connect, releaseCapture]);

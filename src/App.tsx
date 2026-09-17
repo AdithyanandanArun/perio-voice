@@ -3,6 +3,7 @@ import { type FormEvent, useCallback, useMemo, useReducer, useRef, useState } fr
 import { CapturePanel } from './components/CapturePanel';
 import { ChartTable } from './components/ChartTable';
 import { ConfirmationsPanel } from './components/ConfirmationsPanel';
+import { FixtureRecorder } from './components/FixtureRecorder';
 import { HistoryPanel } from './components/HistoryPanel';
 import { MetricsPanel } from './components/MetricsPanel';
 import { StationPanel } from './components/StationPanel';
@@ -36,6 +37,8 @@ const STATUS_LABELS: Record<AsrStatus, string> = {
   processing: 'Recognizing speech',
   error: 'Action needed',
 };
+
+const DEV_BUILD = (import.meta as ImportMeta & { env: { DEV: boolean } }).env.DEV;
 
 function App() {
   const [session, dispatch] = useReducer(sessionReducer, undefined, () => createInitialSession());
@@ -73,6 +76,9 @@ function App() {
     },
     contextVersion: () => contextVersionRef.current,
   });
+  const showFixtureRecorder = DEV_BUILD
+    && typeof window !== 'undefined'
+    && new URLSearchParams(window.location.search).get('record') === '1';
 
   const record = currentRecord(session);
   const tooth = toothAt(session.teeth, session.context.tooth);
@@ -188,6 +194,8 @@ function App() {
             </span>
           </div>
         </section>
+
+        {showFixtureRecorder && <FixtureRecorder />}
 
         <ConfirmationsPanel pending={session.pending} onResolve={resolveConfirmation} />
 

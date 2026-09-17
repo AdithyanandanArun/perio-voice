@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import stat
+import wave
+from pathlib import Path
+
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
@@ -194,3 +198,124 @@ def test_finals_carry_attribution_only_once_a_clinician_is_enrolled() -> None:
         assert isinstance(speaker, dict)
         assert speaker["enrolled"] is True
         assert speaker["decision"] in {"clinician", "other", "unknown"}
+
+
+def test_fixture_capture_route_is_physically_absent_without_exact_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PERIO_FIXTURE_CAPTURE", raising=False)
+    disabled = create_app(FakeRecognizer(), Settings())
+    assert "/api/fixture" not in {
+        route.path for route in disabled.routes
+    }
+    with TestClient(disabled) as client:
+        assert client.post(
+            "/api/fixture?pass=quiet&id=acc-buccle-u01", content=pcm_frame(0.1)
+        ).status_code == 404
+
+    # Truthy-looking values are deliberately insufficient: operators must use
+    # the documented exact switch before the upload surface exists.
+    monkeypatch.setenv("PERIO_FIXTURE_CAPTURE", "true")
+    not_exact = create_app(FakeRecognizer(), Settings())
+    assert "/api/fixture" not in {
+        route.path for route in not_exact.routes
+    }
+
+
+def test_fixture_capture_writes_private_16khz_mono_wav(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "audio"
+    monkeypatch.setenv("PERIO_FIXTURE_CAPTURE", "1")
+    monkeypatch.setattr("server.app.FIXTURE_AUDIO_DIR", destination)
+    enabled = create_app(FakeRecognizer(), Settings())
+    assert "/api/fixture" in {
+        route.path for route in enabled.routes
+    }
+
+    pcm = pcm_frame(0.2, milliseconds=125)
+    with TestClient(enabled) as client:
+        result = client.post(
+            "/api/fixture?pass=quiet&id=acc-buccle-u01",
+            content=pcm,
+            headers={
+                "content-type": "application/octet-stream",
+                "origin": "http://127.0.0.1:5173",
+            },
+        )
+    assert result.status_code == 200
+    assert result.headers["cache-control"] == "no-store"
+    assert result.json() == {
+        "id": "acc-buccle-u01",
+        "pass": "quiet",
+        "samples": len(pcm) // 2,
+        "durationMs": 125,
+    }
+
+    wav_path = destination / "quiet" / "acc-buccle-u01.wav"
+    with wave.open(str(wav_path), "rb") as fixture:
+        assert fixture.getnchannels() == 1
+        assert fixture.getsampwidth() == 2
+        assert fixture.getframerate() == 16_000
+        assert fixture.getnframes() == len(pcm) // 2
+        assert fixture.readframes(fixture.getnframes()) == pcm
+    assert stat.S_IMODE(wav_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(wav_path.parent.stat().st_mode) == 0o700
+
+
+@pytest.mark.parametrize(
+    ("path", "content", "headers", "expected_status"),
+    [
+        ("/api/fixture", b"\x00\x00", {}, 400),
+        ("/api/fixture?pass=quiet&id=not-in-the-manifest", b"\x00\x00", {}, 404),
+        ("/api/fixture?pass=other&id=acc-buccle-u01", b"\x00\x00", {}, 404),
+        ("/api/fixture?pass=quiet&id=acc-buccle-u01", b"", {}, 400),
+        ("/api/fixture?pass=quiet&id=acc-buccle-u01", b"\x00", {}, 400),
+        (
+            "/api/fixture?pass=quiet&id=acc-buccle-u01",
+            b"\x00\x00",
+            {"content-type": "application/json"},
+            415,
+        ),
+        (
+            "/api/fixture?pass=quiet&id=acc-buccle-u01",
+            b"\x00\x00",
+            {"origin": "https://malicious.example"},
+            403,
+        ),
+    ],
+)
+def test_fixture_capture_rejects_unaddressed_or_malformed_input(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    path: str,
+    content: bytes,
+    headers: dict[str, str],
+    expected_status: int,
+) -> None:
+    destination = tmp_path / "audio"
+    monkeypatch.setenv("PERIO_FIXTURE_CAPTURE", "1")
+    monkeypatch.setattr("server.app.FIXTURE_AUDIO_DIR", destination)
+    with TestClient(create_app(FakeRecognizer(), Settings())) as client:
+        response = client.post(path, content=content, headers=headers)
+    assert response.status_code == expected_status
+    assert not list(destination.rglob("*.wav")) if destination.exists() else True
+
+
+def test_fixture_capture_rejects_oversized_pcm_before_writing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "audio"
+    monkeypatch.setenv("PERIO_FIXTURE_CAPTURE", "1")
+    monkeypatch.setattr("server.app.FIXTURE_AUDIO_DIR", destination)
+    oversized = bytes(16_000 * 2 * 30 + 2)
+    with TestClient(create_app(FakeRecognizer(), Settings())) as client:
+        response = client.post(
+            "/api/fixture?pass=noise&id=acc-buccle-u01",
+            content=oversized,
+            headers={"content-type": "application/octet-stream"},
+        )
+    assert response.status_code == 413
+    assert not destination.exists()
