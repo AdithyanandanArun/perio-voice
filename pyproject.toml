@@ -33,6 +33,6 @@ select = ["E", "F", "I", "B", "UP", "ASYNC", "RUF"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["server", "scripts/verify_model_runtime.py"]
+files = ["server", "scripts"]
 ignore_missing_imports = true
 warn_unused_ignores = false

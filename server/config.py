@@ -28,6 +28,10 @@ class Settings:
     partial_interval_ms: int = 700
     max_utterance_ms: int = 12_000
     decode_queue_size: int = 2
+    speaker_accept: float = 0.975
+    speaker_reject: float = 0.955
+    speaker_min_ms: int = 400
+    speaker_enroll_ms: int = 2_000
     allowed_origins: tuple[str, ...] = (
         "http://127.0.0.1:5173",
         "http://localhost:5173",
@@ -46,6 +50,12 @@ class Settings:
             raise ValueError("ASR_MAX_UTTERANCE_MS must be at least ASR_MIN_SPEECH_MS.")
         if self.decode_queue_size < 1:
             raise ValueError("ASR_DECODE_QUEUE_SIZE must be at least 1.")
+        if not -1.0 <= self.speaker_reject < self.speaker_accept <= 1.0:
+            raise ValueError("ASR_SPEAKER_REJECT must be below ASR_SPEAKER_ACCEPT.")
+        if self.speaker_min_ms <= 0:
+            raise ValueError("ASR_SPEAKER_MIN_MS must be positive.")
+        if self.speaker_enroll_ms < self.speaker_min_ms:
+            raise ValueError("ASR_SPEAKER_ENROLL_MS must be at least ASR_SPEAKER_MIN_MS.")
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -63,6 +73,10 @@ class Settings:
             partial_interval_ms=_env_int("ASR_PARTIAL_INTERVAL_MS", 700),
             max_utterance_ms=_env_int("ASR_MAX_UTTERANCE_MS", 12_000),
             decode_queue_size=_env_int("ASR_DECODE_QUEUE_SIZE", 2),
+            speaker_accept=_env_float("ASR_SPEAKER_ACCEPT", 0.975),
+            speaker_reject=_env_float("ASR_SPEAKER_REJECT", 0.955),
+            speaker_min_ms=_env_int("ASR_SPEAKER_MIN_MS", 400),
+            speaker_enroll_ms=_env_int("ASR_SPEAKER_ENROLL_MS", 2_000),
             allowed_origins=tuple(
                 origin.strip()
                 for origin in os.getenv(
