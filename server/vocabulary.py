@@ -7,9 +7,19 @@ turns an open-ended guess into a closed choice, and the failure modes that
 dominate free-form recognition of short utterances — "for" instead of four,
 "Bye bye." out of a handpiece — stop being possible rather than merely unlikely.
 
-The grammar is selected by the clinical context the pipeline already tracks, so
-while three probing depths are expected the recognizer can emit little except
-digits.
+One grammar covers all clinical speech. An earlier version narrowed it by
+context — digits only while probing depths were expected — which was wrong, and
+wrong in a way that produced confident errors rather than refusals. A grammar
+does not merely bias the decoder toward the words in it; it makes every other
+word impossible, so legitimate speech containing an excluded word is mapped onto
+whichever permitted word is acoustically nearest. Saying "buccal" while depths
+were expected came back as "pocket", because `buccal` had been narrowed out and
+`pocket` was the closest thing left.
+
+That also contradicts the premise of the product: a clinician may say anything at
+any moment, and should not have to know what the software is currently prepared
+to hear. Narrowing is retained only for the one distinction that is real —
+whether the vocabulary must stay open at all.
 
 Words listed here must exist in the recognizer's lexicon or the recognizer
 silently drops them, so `scripts/verify_grammar_lexicon.py` checks coverage and
@@ -29,7 +39,12 @@ UNKNOWN_TOKEN: Final = "[unk]"
 
 
 class Expectation(StrEnum):
-    """What the clinical context is waiting for."""
+    """What the clinical context is waiting for.
+
+    These select the engine, not the vocabulary: every clinical value resolves to
+    the same complete grammar. The distinction that matters is clinical versus
+    free-form, because only that one changes which recognizer can answer.
+    """
 
     DEPTHS = "depths"
     TOOTH = "tooth"
@@ -94,11 +109,18 @@ Measured before removal, the utterance "three" came back as "free". The other
 cues cover the same meaning without colliding with a digit."""
 NEGATION_CUES: Final[tuple[str, ...]] = ("without", "none", "negative", "of", "or", "and")
 
+"""Measurement words.
+
+`pocket` is deliberately absent. It is a near-homophone of `buccal` — both are
+two syllables around a medial /k/, differing mainly in the voicing of the initial
+plosive — and it won, so a spoken surface change was charted as a measurement
+word. "Pocket depth" still reaches the chart: the browser lexicon maps it to
+`depth`, which is in the grammar.
+"""
 MEASUREMENT_WORDS: Final[tuple[str, ...]] = (
     "depth",
     "depths",
     "probing",
-    "pocket",
     "recession",
     "gingival",
     "margin",
@@ -219,17 +241,23 @@ CLINICAL_GRAMMAR: Final = _grammar(
 )
 
 _GRAMMARS: Final[dict[Expectation, tuple[str, ...]]] = {
-    Expectation.DEPTHS: DEPTH_GRAMMAR,
-    Expectation.TOOTH: TOOTH_GRAMMAR,
-    Expectation.FINDINGS: FINDING_GRAMMAR,
-    Expectation.COMMANDS: COMMAND_GRAMMAR,
+    Expectation.DEPTHS: CLINICAL_GRAMMAR,
+    Expectation.TOOTH: CLINICAL_GRAMMAR,
+    Expectation.FINDINGS: CLINICAL_GRAMMAR,
+    Expectation.COMMANDS: CLINICAL_GRAMMAR,
     Expectation.CLINICAL: CLINICAL_GRAMMAR,
     Expectation.FREE: CLINICAL_GRAMMAR,
 }
 
 
 def grammar_for(expectation: Expectation) -> tuple[str, ...]:
-    """The words the recognizer may emit, plus the out-of-grammar marker."""
+    """The words the recognizer may emit, plus the out-of-grammar marker.
+
+    Every clinical expectation returns the same grammar on purpose; see the
+    module docstring for why narrowing produced substitutions instead of
+    refusals. The parameter is kept because routing still reads the expectation
+    and because a future grammar could differ without changing callers.
+    """
     return (*_GRAMMARS[expectation], UNKNOWN_TOKEN)
 
 
