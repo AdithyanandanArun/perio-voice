@@ -88,6 +88,8 @@ interface Outcome {
   changes: ChartChange[];
   latencyEligible: boolean;
   supersedes: number | null;
+  /** Set when this outcome exists only to reverse or reinstate an entry. */
+  compensates: number | null;
   stop: boolean;
 }
 
@@ -104,7 +106,12 @@ export function processUtterance(
     next: ClinicalSession,
     kind: ClinicalEventKind,
     message: string,
-    options: { changes?: ChartChange[]; latencyEligible?: boolean; supersedes?: number | null } = {},
+    options: {
+      changes?: ChartChange[];
+      latencyEligible?: boolean;
+      supersedes?: number | null;
+      compensates?: number | null;
+    } = {},
   ): ClinicalSession => {
     const committed = recordEvent(next, {
       kind,
@@ -115,6 +122,7 @@ export function processUtterance(
       trace: trace.snapshot(),
       changes: options.changes,
       supersedes: options.supersedes ?? null,
+      compensates: options.compensates ?? undefined,
     });
     return recordParserDuration(committed, round(now() - started));
   };
@@ -237,6 +245,7 @@ export function processUtterance(
   const messages: string[] = [];
   let kind: ClinicalEventKind = 'context';
   let supersedes: number | null = null;
+  let compensates: number | null = null;
   let latencyEligible = false;
 
   for (const intent of parse.intents) {
@@ -246,12 +255,14 @@ export function processUtterance(
     changes.push(...outcome.changes);
     if (outcome.latencyEligible) latencyEligible = true;
     if (outcome.supersedes !== null) supersedes = outcome.supersedes;
+    if (outcome.compensates !== null) compensates = outcome.compensates;
     kind = outcome.kind;
     if (outcome.stop) {
       return finish(working, outcome.kind, messages.join(' '), {
         changes: outcome.kind === 'rejected' ? [] : changes,
         latencyEligible: outcome.kind === 'rejected' ? false : latencyEligible,
         supersedes,
+        compensates,
       });
     }
   }
@@ -260,6 +271,7 @@ export function processUtterance(
     changes,
     latencyEligible,
     supersedes,
+    compensates,
   });
   return maybeAutoAdvance(committed, at);
 }
@@ -279,11 +291,29 @@ function describeIntentShort(intent: Intent): string {
 }
 
 function passthrough(session: ClinicalSession, kind: ClinicalEventKind, message: string): Outcome {
-  return { session, kind, message, changes: [], latencyEligible: false, supersedes: null, stop: false };
+  return {
+    session,
+    kind,
+    message,
+    changes: [],
+    latencyEligible: false,
+    supersedes: null,
+    compensates: null,
+    stop: false,
+  };
 }
 
 function halt(session: ClinicalSession, kind: ClinicalEventKind, message: string): Outcome {
-  return { session, kind, message, changes: [], latencyEligible: false, supersedes: null, stop: true };
+  return {
+    session,
+    kind,
+    message,
+    changes: [],
+    latencyEligible: false,
+    supersedes: null,
+    compensates: null,
+    stop: true,
+  };
 }
 
 function applyIntent(
@@ -379,6 +409,7 @@ function applyCommand(
         changes: [change],
         latencyEligible: false,
         supersedes: null,
+        compensates: null,
         stop: false,
       };
     }
@@ -426,6 +457,7 @@ function applyClear(session: ClinicalSession, at: number, trace: Trace): Outcome
     changes,
     latencyEligible: false,
     supersedes: null,
+    compensates: null,
     stop: false,
   };
 }
@@ -447,6 +479,7 @@ function applyUndo(session: ClinicalSession, at: number, trace: Trace): Outcome 
     changes: inverse,
     latencyEligible: false,
     supersedes: null,
+    compensates: entry.id,
     stop: false,
   };
 }
@@ -471,6 +504,7 @@ function applyRedo(session: ClinicalSession, at: number, trace: Trace): Outcome 
     changes: [...entry.changes],
     latencyEligible: false,
     supersedes: null,
+    compensates: entry.id,
     stop: false,
   };
 }
@@ -535,6 +569,7 @@ function applyValues(
     changes,
     latencyEligible: true,
     supersedes: null,
+    compensates: null,
     stop: false,
   };
 }
@@ -606,6 +641,7 @@ function applyCorrection(
     changes: [change],
     latencyEligible: true,
     supersedes: plan.targetEntryId,
+    compensates: null,
     stop: false,
   };
 }
@@ -666,6 +702,7 @@ function applyFindings(
     changes,
     latencyEligible: true,
     supersedes: null,
+    compensates: null,
     stop: false,
   };
 }

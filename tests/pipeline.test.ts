@@ -1,0 +1,194 @@
+import { describe, expect, it } from 'vitest';
+import { createInitialSession, currentRecord, processUtterance } from '../src/domain/clinicalEngine';
+import { recordAt } from '../src/domain/chart';
+import { percentile } from '../src/domain/session';
+import type { ClinicalSession, SpeakerVerdict, StageName, UtteranceInput } from '../src/domain/types';
+
+function input(transcript: string, overrides: Partial<UtteranceInput> = {}): UtteranceInput {
+  return {
+    transcript,
+    words: [],
+    timing: { startedAt: 0, observedAt: 30 },
+    source: 'asr',
+    utteranceId: 1,
+    audioMs: 600,
+    decodeMs: 120,
+    observedVersion: null,
+    speaker: null,
+    ...overrides,
+  };
+}
+
+function speaker(decision: SpeakerVerdict['decision'], overridden = false): SpeakerVerdict {
+  return { decision, similarity: decision === 'clinician' ? 0.88 : 0.21, overridden };
+}
+
+function stages(session: ClinicalSession): StageName[] {
+  return session.history[0].trace.map((entry) => entry.stage);
+}
+
+describe('pipeline stage order', () => {
+  it('runs every stage in the declared order for a charted utterance', () => {
+    const session = processUtterance(createInitialSession(), input('three four five'));
+    expect(stages(session)).toEqual([
+      'speaker',
+      'staleness',
+      'lexicon',
+      'lattice',
+      'relevance',
+      'context',
+      'grammar',
+      'sequence',
+      'commit',
+    ]);
+  });
+
+  it('stops at the stage that refused, and says why', () => {
+    const session = processUtterance(createInitialSession(), input('can you pass me four instruments'));
+    expect(stages(session)).toEqual(['speaker', 'staleness', 'lexicon', 'lattice', 'relevance']);
+    const relevance = session.history[0].trace.at(-1);
+    expect(relevance).toMatchObject({ outcome: 'block' });
+    expect(relevance?.detail).toContain('request to another person');
+  });
+
+  it('records what the lexicon and the resolver changed', () => {
+    const session = processUtterance(createInitialSession(), input('p d to for ate'));
+    const trace = session.history[0].trace;
+    expect(trace.find((entry) => entry.stage === 'lexicon')?.detail).toContain('p d→depth');
+    expect(trace.find((entry) => entry.stage === 'context')?.detail).toBe('to→2, for→4, ate→8');
+    expect(currentRecord(session).probingDepths).toEqual([2, 4, 8]);
+  });
+});
+
+describe('speaker attribution gate', () => {
+  it('lets the clinician chart when attribution is required and verified', () => {
+    const session = processUtterance(
+      createInitialSession({ requireSpeaker: true }),
+      input('three four five', { speaker: speaker('clinician') }),
+    );
+    expect(currentRecord(session).probingDepths).toEqual([3, 4, 5]);
+  });
+
+  it('blocks another speaker before anything is parsed', () => {
+    const session = processUtterance(
+      createInitialSession({ requireSpeaker: true }),
+      input('three four five', { speaker: speaker('other') }),
+    );
+    expect(currentRecord(session).probingDepths).toEqual([null, null, null]);
+    expect(session.counters.blockedSpeaker).toBe(1);
+    expect(stages(session)).toEqual(['speaker']);
+  });
+
+  it('holds an unrecognized voice for confirmation instead of discarding it', () => {
+    const session = processUtterance(
+      createInitialSession({ requireSpeaker: true }),
+      input('three four five', { speaker: speaker('unknown') }),
+    );
+    expect(session.pending[0]).toMatchObject({ reason: 'unknown_speaker' });
+    expect(currentRecord(session).probingDepths).toEqual([null, null, null]);
+  });
+
+  it('respects a manual attribution override', () => {
+    const session = processUtterance(
+      createInitialSession({ requireSpeaker: true }),
+      input('three four five', { speaker: speaker('other', true) }),
+    );
+    expect(currentRecord(session).probingDepths).toEqual([3, 4, 5]);
+  });
+
+  it('ignores attribution entirely when the session does not require it', () => {
+    const session = processUtterance(
+      createInitialSession(),
+      input('three four five', { speaker: speaker('other') }),
+    );
+    expect(currentRecord(session).probingDepths).toEqual([3, 4, 5]);
+  });
+});
+
+describe('stale context guard', () => {
+  it('refuses a final that was overtaken by a change of location', () => {
+    const session = processUtterance(
+      createInitialSession(),
+      input('three four five', { observedVersion: 0 }),
+    );
+    expect(currentRecord(session).probingDepths).toEqual([null, null, null]);
+    expect(session.counters.staleContext).toBe(1);
+    expect(session.history[0].message).toContain('clinical context changed');
+  });
+
+  it('accepts a final that observed the current location', () => {
+    const session = processUtterance(
+      createInitialSession(),
+      input('three four five', { observedVersion: 1 }),
+    );
+    expect(currentRecord(session).probingDepths).toEqual([3, 4, 5]);
+  });
+});
+
+describe('relevance shadow mode', () => {
+  it('records the decision without blocking the commit', () => {
+    const session = processUtterance(
+      createInitialSession({ relevanceMode: 'shadow' }),
+      input('okay this looks fine three four five'),
+    );
+    expect(session.counters.nonChartable).toBe(1);
+    expect(currentRecord(session).probingDepths).toEqual([3, 4, 5]);
+  });
+});
+
+describe('multi-intent utterances', () => {
+  it('moves context, records depths, and asserts a finding in one pass', () => {
+    const session = processUtterance(
+      createInitialSession(),
+      input('tooth fifteen three four five bleeding'),
+    );
+    expect(session.context.tooth).toBe(15);
+    expect(recordAt(session.charts, 15, 'buccal')).toMatchObject({
+      probingDepths: [3, 4, 5],
+      bleeding: true,
+    });
+    expect(recordAt(session.charts, 14, 'buccal').probingDepths).toEqual([null, null, null]);
+  });
+
+  it('records both graded findings on the tooth, not the surface', () => {
+    const session = processUtterance(createInitialSession(), input('mobility two furcation class one'));
+    expect(session.teeth[14]).toMatchObject({ mobility: 2, furcation: 1 });
+  });
+});
+
+describe('auto advance', () => {
+  it('stays put by default so a single station can be reviewed', () => {
+    const session = processUtterance(createInitialSession(), input('three four five'));
+    expect(session.context.tooth).toBe(14);
+  });
+
+  it('moves to the next station when continuous charting is enabled', () => {
+    const session = processUtterance(
+      createInitialSession({ autoAdvance: true }),
+      input('three four five'),
+    );
+    expect(session.context.tooth).toBe(15);
+    expect(recordAt(session.charts, 14, 'buccal').probingDepths).toEqual([3, 4, 5]);
+  });
+});
+
+describe('parser latency budget', () => {
+  it('keeps p95 parser time under the declared 10 ms', () => {
+    let session = createInitialSession({ autoAdvance: true });
+    const phrases = [
+      'three four five',
+      'bleeding',
+      'tooth fifteen lingual',
+      'to for ate',
+      'can you pass me that',
+      'no bleeding or suppuration',
+      'repeat that three four four',
+    ];
+    for (let index = 0; index < 210; index += 1) {
+      session = processUtterance(session, input(phrases[index % phrases.length]));
+    }
+    const p95 = percentile(session.parserSamples, 0.95);
+    expect(p95).not.toBeNull();
+    expect(p95 as number).toBeLessThan(10);
+  });
+});
