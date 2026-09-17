@@ -18,10 +18,12 @@ from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSoc
 from server.audio import decode_pcm16
 from server.config import Settings
 from server.prompt import prompt_version
-from server.recognizer import FasterWhisperRecognizer, ModelStatus, Recognizer
+from server.recognizer import ModelStatus, Recognizer
+from server.routed_recognizer import RoutedRecognizer
 from server.session import AsrSession
 from server.speaker import SpeakerGate
 from server.telemetry import Telemetry
+from server.vocabulary import parse_expectation
 
 PROTOCOL_VERSION = 1
 FIXTURE_MANIFEST_PATH = (
@@ -42,7 +44,7 @@ def create_app(
     preload: bool = True,
 ) -> FastAPI:
     resolved_settings = settings or Settings.from_env()
-    resolved_recognizer = recognizer or FasterWhisperRecognizer(resolved_settings)
+    resolved_recognizer = recognizer or RoutedRecognizer(resolved_settings)
     telemetry = Telemetry()
     speaker_gate = SpeakerGate(resolved_settings)
 
@@ -267,6 +269,13 @@ def create_app(
                         session = None
                     else:
                         await send({"type": "stopped", "droppedPartials": 0})
+                elif message_type == "context":
+                    expectation = parse_expectation(message.get("expect"))
+                    if session is not None:
+                        session.set_expectation(expectation)
+                    elif isinstance(resolved_recognizer, RoutedRecognizer):
+                        resolved_recognizer.set_expectation(expectation)
+                    await send({"type": "context_ack", "expect": expectation.value})
                 elif message_type == "ping":
                     await send({"type": "pong"})
                 elif message_type == "retry_model":
@@ -287,7 +296,9 @@ def create_app(
                             "type": "error",
                             "code": "invalid_message",
                             "recoverable": True,
-                            "message": "Expected a start, stop, ping, or retry_model message.",
+                            "message": (
+                                "Expected a start, stop, context, ping, or retry_model message."
+                            ),
                         }
                     )
         except WebSocketDisconnect:
@@ -325,6 +336,7 @@ def _model_message(recognizer: Recognizer, settings: Settings) -> dict[str, Any]
         "device": recognizer.device,
         "computeType": recognizer.compute_type,
         "sampleRate": settings.sample_rate,
+        "engine": settings.engine.value,
         "error": recognizer.error,
     }
 

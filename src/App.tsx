@@ -1,5 +1,5 @@
 import { AudioLines, RotateCcw, ShieldCheck } from 'lucide-react';
-import { type FormEvent, useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { CapturePanel } from './components/CapturePanel';
 import { ChartTable } from './components/ChartTable';
 import { ConfirmationsPanel } from './components/ConfirmationsPanel';
@@ -9,12 +9,12 @@ import { MetricsPanel } from './components/MetricsPanel';
 import { StationPanel } from './components/StationPanel';
 import { WorkflowPanel } from './components/WorkflowPanel';
 import { createInitialSession, currentRecord } from './domain/clinicalEngine';
-import { toothAt } from './domain/chart';
+import { nextOpenPosition, toothAt } from './domain/chart';
 import { sessionReducer } from './domain/sessionReducer';
 import type { WorkflowCommand } from './domain/grammar';
 import type { SessionSettings, Surface, UtteranceInput } from './domain/types';
 import { useLocalAsr } from './speech/useLocalAsr';
-import type { AsrFinal, AsrStatus } from './speech/protocol';
+import type { AsrFinal, AsrStatus, ClinicalExpectation } from './speech/protocol';
 
 const EXAMPLE_PHRASES = [
   'three four five',
@@ -82,6 +82,15 @@ function App() {
 
   const record = currentRecord(session);
   const tooth = toothAt(session.teeth, session.context.tooth);
+
+  // Telling the service what the chart is waiting for is what lets it narrow the
+  // recognizer grammar: while sites are open it need only distinguish digits.
+  const expectation: ClinicalExpectation =
+    nextOpenPosition(record, session.context.measurement) < 3 ? 'depths' : 'clinical';
+  const declareExpectation = speech.declareExpectation;
+  useEffect(() => {
+    declareExpectation(expectation);
+  }, [declareExpectation, expectation, speech.status]);
   const chartRows = useMemo(
     () => Object.values(session.charts)
       .filter((row) =>

@@ -74,7 +74,8 @@ def test_the_running_service_reports_counters_over_the_health_surface() -> None:
             socket.receive_json()
             socket.receive_json()
             socket.send_json({"type": "start"})
-            socket.send_bytes(pcm_frame(0.2))
+            for _ in range(6):
+                socket.send_bytes(pcm_frame(0.2))
             socket.send_bytes(pcm_frame(0))
             socket.send_json({"type": "stop"})
             for _ in range(8):

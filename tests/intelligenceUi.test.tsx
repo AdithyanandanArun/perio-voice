@@ -38,6 +38,7 @@ vi.mock('../src/speech/useLocalAsr', () => ({
     start: vi.fn(),
     stop: vi.fn(),
     retry: vi.fn(),
+    declareExpectation: vi.fn(),
     enroll: harness.enroll,
     revokeEnrollment: harness.revokeEnrollment,
   }),

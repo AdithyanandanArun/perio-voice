@@ -30,6 +30,8 @@ COUNTERS: Final[frozenset[str]] = frozenset(
         "speaker_clinician",
         "speaker_other",
         "speaker_unknown",
+        "finals_rejected_short",
+        "finals_rejected_no_speech",
     }
 )
 

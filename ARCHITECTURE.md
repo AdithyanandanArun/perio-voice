@@ -98,6 +98,16 @@ is revoked by a single request. Attribution is always visible and always
 overridable, because hidden attribution is worse than none: a clinician cannot
 correct a decision they cannot see.
 
+**This does not currently work, and it is off by default.** The calibration above
+compared equal-length segments, which is not the comparison the product makes.
+Measured at real durations — enrollment on several seconds, verification on a
+half-second utterance — the distributions invert below two seconds: the enrolled
+speaker scored 0.766 where another voice scored 0.963. A rolling four-second
+window recovers some separation but still leaves a margin of +0.0007 on clean
+audio. Gate `G33` is abandoned rather than tuned. Enrollment and short-utterance
+handling were genuinely repaired and are gated; the discrimination is not there.
+See [EVALUATION.md](./EVALUATION.md#speaker-attribution-does-not-separate-speakers).
+
 Known limits: a spectral profile is not a biometric identity claim. It separates
 clearly different voices and abstains otherwise, it degrades with heavy noise and
 very short utterances, and it does not handle overlapping speech. Pitch was
@@ -131,6 +141,29 @@ what makes casual speech look clinical.
 The same vocabulary supplies the recognizer's biasing prompt through
 `shared/dental-prompt.json`, so the browser and the Python service bias
 identically and a vocabulary change cannot land on one side only.
+
+### 3b. Recognizer routing — `server/routed_recognizer.py`, `server/vocabulary.py`
+
+Two engines with opposite strengths. The grammar recognizer is given the clinical
+vocabulary, so inside a grammar the decoder chooses between words a clinician
+could actually be saying; Whisper has an open vocabulary, which free-form
+dictation needs. Routing is by declared clinical expectation rather than by
+confidence, so the decision is inspectable and a rerun routes identically.
+
+Measured on spoken dental phrases: grammar 0.060 word error and 93% exact at
+163 ms, against Whisper `tiny.en` at 0.787 and 40% at 272 ms. Whisper size does
+not close that gap — `base.en` scores below `tiny.en` — because a thirty-second
+sequence model resolving a half-second command is a shape mismatch rather than a
+capacity limit.
+
+Words a grammar lists but the lexicon lacks are dropped silently, and Vosk
+reports that only on C-level stderr. `scripts/verify_grammar_lexicon.py` gates
+coverage and `KNOWN_LEXICON_GAPS` records the genuine absences, so a clinical
+term can never be unrecognizable without someone deciding it may be.
+
+Grammar membership is a safety property, not only an accuracy one, so words are
+excluded when they collide with ordinary speech: `free` beat `three`, and `pus`
+turned "can you pass me that" into a suppuration finding.
 
 ### 4. Candidate lattice — `src/domain/lattice.ts`
 
@@ -430,7 +463,11 @@ Stated plainly, because the gaps matter more than the features:
   The clinical tier evaluates the layer this project contributes, using
   transcripts including recognizer errors, but it does not measure recognition of
   dental speech by accent or speaker, which needs consented recordings.
-- **Trained speaker embeddings.** See stage 1 above.
+- **Working speaker attribution.** The classical profile does not separate voices
+  at clinical utterance lengths; see stage 1. A trained speaker-embedding model
+  behind the same interface is the fix.
+- **A recorded dental fixture.** Recognizer comparison currently runs on
+  synthesized speech, one voice, no room.
 - **Overlapping speech.** Two people talking at once is detected only as a lower
   similarity score, and resolves to `unknown`.
 - **A model-worker pool.** One operatory per process.

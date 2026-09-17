@@ -8,6 +8,7 @@ dependencies = [
   "faster-whisper>=1.2,<2",
   "numpy>=2.0,<3",
   "uvicorn[standard]>=0.35,<1",
+  "vosk>=0.3.45,<0.4",
 ]
 
 [dependency-groups]

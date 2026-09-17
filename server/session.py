@@ -12,8 +12,10 @@ from server.cadence import CadenceController
 from server.config import Settings
 from server.denoise import apply_profile
 from server.recognizer import Recognizer
+from server.routed_recognizer import RoutedRecognizer
 from server.speaker import SpeakerGate
 from server.telemetry import Telemetry
+from server.vocabulary import Expectation
 
 SendMessage = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -145,10 +147,37 @@ class AsrSession:
             finally:
                 self._queue.task_done()
 
+    def set_expectation(self, expectation: Expectation) -> None:
+        """Narrows recognition to what the active clinical context is waiting for."""
+        if isinstance(self.recognizer, RoutedRecognizer):
+            self.recognizer.set_expectation(expectation)
+
     async def _decode(self, request: DecodeRequest) -> None:
         final = request.kind is DecodeKind.FINAL
         if request.queued_at_ms:
             self.telemetry.observe("queue_wait_ms", max(0.0, monotonic_ms() - request.queued_at_ms))
+
+        # Every model tested hallucinates confident words on sub-half-second
+        # audio, so the cheapest defence is not to ask it.
+        if final and request.audio_ms < self.settings.min_final_ms:
+            self.telemetry.count("finals_rejected_short")
+            await self.send(
+                {
+                    "type": "final",
+                    "utteranceId": request.utterance_id,
+                    "text": "",
+                    "audioMs": request.audio_ms,
+                    "decodeMs": 0,
+                    "startedAtMs": round(request.started_at_ms, 2),
+                    "endedAtMs": round(request.ended_at_ms, 2),
+                    "droppedPartials": self._dropped_partials,
+                    "words": [],
+                    "reason": "too_short",
+                    "speaker": None,
+                    "cadence": self._adapt((), request.audio_ms),
+                }
+            )
+            return
 
         audio = apply_profile(request.audio, request.sample_rate, self.settings.denoise_profile)
         result = await self.recognizer.transcribe(audio, partial=not final)
@@ -159,16 +188,28 @@ class AsrSession:
         )
         self.telemetry.observe("audio_ms", request.audio_ms)
 
+        # Whisper's own no-speech estimate, which cleanly separates silence,
+        # hiss and equipment noise from speech. Without this a handpiece comes
+        # back as the word "You".
+        rejected = final and result.no_speech_prob > self.settings.no_speech_threshold
+        if rejected:
+            self.telemetry.count("finals_rejected_no_speech")
+
         message: dict[str, Any] = {
             "type": request.kind.value,
             "utteranceId": request.utterance_id,
-            "text": result.text,
+            "text": "" if rejected else result.text,
             "audioMs": request.audio_ms,
             "decodeMs": result.decode_ms,
             "startedAtMs": round(request.started_at_ms, 2),
             "endedAtMs": round(request.ended_at_ms, 2),
             "droppedPartials": self._dropped_partials,
+            "engine": result.engine,
+            "unknownRatio": round(result.unknown_ratio, 4),
+            "noSpeechProb": round(result.no_speech_prob, 4),
         }
+        if rejected:
+            message["reason"] = "no_speech"
 
         if final:
             message["words"] = [

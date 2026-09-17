@@ -41,9 +41,24 @@ jobs:
       - name: Capability gates
         run: |
           for gate in lexicon relevance disambiguation negation corrections \
-                      sequence-guard workflow-state pipeline speaker cadence \
-                      telemetry intelligence-ui architecture documentation; do
+                      sequence-guard workflow-state pipeline cadence \
+                      telemetry intelligence-ui architecture documentation \
+                      dental-evaluation; do
             echo "::group::$gate"
             node "scripts/verify-$gate.mjs"
             echo "::endgroup::"
           done
+          node scripts/verify-fixture-capture.mjs --manifest
+
+      - name: Speaker gates
+        run: |
+          uv run python scripts/verify_enrollment.py
+          uv run python scripts/verify_short_verification.py
+
+      # The grammar gates need the 128 MB recognizer model, which npm run setup
+      # fetches. Kept separate so a download failure is obvious in the log.
+      - name: Recognizer gates
+        run: |
+          uv run python scripts/verify_grammar_lexicon.py
+          uv run python scripts/verify_grammar_routing.py
+          uv run python scripts/evaluate_recognizers.py --gate

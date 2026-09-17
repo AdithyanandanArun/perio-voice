@@ -50,8 +50,18 @@ CEPSTRA: Final = 13
 LOW_HZ: Final = 80.0
 HIGH_HZ: Final = 7000.0
 FFT_SIZE: Final = 1024
-"""Frames below this fraction of the utterance's peak energy are not speech."""
-VOICED_ENERGY_RATIO: Final = 0.15
+"""Absolute RMS floor for a frame to count as speech.
+
+This used to be a fraction of the loudest frame in the clip, which failed badly:
+speech has wide dynamic range, so a peak-relative bar discards roughly a third of
+genuine speech, and one loud transient suppresses everything after it. Six
+seconds of continuous speech yielded only 1,870 ms of "voiced" audio against a
+2,000 ms enrollment requirement, which is why enrollment appeared to need
+shouting. An absolute floor with a much smaller relative component is stable
+against both level and transients."""
+VOICED_RMS_FLOOR: Final = 0.006
+"""Small relative component, so a very loud recording is not entirely voiced."""
+VOICED_PEAK_RATIO: Final = 0.02
 
 
 class SpeakerDecision(StrEnum):
@@ -85,9 +95,15 @@ class EnrollmentState:
     enrolled: bool
     samples: int
     voiced_ms: int
+    required_ms: int = 0
 
     def as_message(self) -> dict[str, object]:
-        return {"enrolled": self.enrolled, "samples": self.samples, "voicedMs": self.voiced_ms}
+        return {
+            "enrolled": self.enrolled,
+            "samples": self.samples,
+            "voicedMs": self.voiced_ms,
+            "requiredMs": self.required_ms,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,11 +181,10 @@ def profile(audio: FloatAudio, sample_rate: int) -> VoiceProfile:
     frames = _frame(np.asarray(audio, dtype=np.float32), frame_len, hop)
     windowed = frames * np.hanning(frame_len).astype(np.float32)
 
-    energies = np.sum(np.square(windowed), axis=1)
-    peak = float(np.max(energies)) if energies.size else 0.0
-    voiced = (
-        energies >= peak * VOICED_ENERGY_RATIO if peak > 0 else np.ones(len(frames), dtype=bool)
-    )
+    rms = np.sqrt(np.mean(np.square(windowed), axis=1))
+    peak = float(np.max(rms)) if rms.size else 0.0
+    threshold = max(VOICED_RMS_FLOOR, peak * VOICED_PEAK_RATIO)
+    voiced = rms >= threshold
     if not bool(np.any(voiced)):
         voiced = np.ones(len(frames), dtype=bool)
 
@@ -205,13 +220,18 @@ class SpeakerGate:
         self._cepstral: NDArray[np.float32] | None = None
         self._samples = 0
         self._voiced_ms = 0
+        self._window: list[FloatAudio] = []
+        self._window_samples = 0
 
     @property
     def enrolled(self) -> bool:
-        return self._spectral is not None
+        """Enrolled once enough speech has accumulated, across any number of takes."""
+        return self._spectral is not None and self._voiced_ms >= self.settings.speaker_enroll_ms
 
     def state(self) -> EnrollmentState:
-        return EnrollmentState(self.enrolled, self._samples, self._voiced_ms)
+        return EnrollmentState(
+            self.enrolled, self._samples, self._voiced_ms, self.settings.speaker_enroll_ms
+        )
 
     def reset(self) -> EnrollmentState:
         """Revokes the stored profile. Enrollment data never leaves this process."""
@@ -219,30 +239,69 @@ class SpeakerGate:
         self._cepstral = None
         self._samples = 0
         self._voiced_ms = 0
+        self.forget_window()
         return self.state()
 
+    def forget_window(self) -> None:
+        """Drops accumulated verification audio, e.g. when a stream ends."""
+        self._window = []
+        self._window_samples = 0
+
+    def _remember(self, audio: FloatAudio) -> FloatAudio:
+        """Keeps a trailing window of recent speech for attribution.
+
+        A single clinical utterance is far too short to attribute. Measured
+        against a six-second enrollment, the same speaker and a different speaker
+        are indistinguishable below about two seconds and actually invert below
+        one: at 0.5 s the enrolled speaker scored 0.766 while another voice
+        scored 0.963. Separation only becomes usable around four seconds.
+
+        Who is holding the microphone does not change between utterances, so the
+        window is the right unit to judge, not the utterance.
+        """
+        limit = round(self.settings.sample_rate * self.settings.speaker_window_ms / 1_000)
+        self._window.append(audio)
+        self._window_samples += len(audio)
+        # Keep at least the most recent chunk: a single clip longer than the
+        # window would otherwise empty the buffer entirely.
+        while len(self._window) > 1 and self._window_samples > limit * 2:
+            removed = self._window.pop(0)
+            self._window_samples -= len(removed)
+        combined = np.concatenate(self._window).astype(np.float32, copy=False)
+        return combined[-limit:] if len(combined) > limit else combined
+
     def enroll(self, audio: FloatAudio) -> EnrollmentState:
+        """Folds one take into the profile.
+
+        Takes accumulate rather than each having to be sufficient on its own, so
+        the interface can show progress toward the target and the clinician can
+        simply speak again instead of being told a whole recording was wasted.
+        """
         voice = profile(audio, self.settings.sample_rate)
-        if voice.voiced_ms < self.settings.speaker_enroll_ms:
+        if voice.voiced_ms < self.settings.speaker_min_ms:
             raise ValueError(
-                f"Enrollment needs at least {self.settings.speaker_enroll_ms} ms of speech; "
-                f"{voice.voiced_ms} ms was usable."
+                f"That take contained {voice.voiced_ms} ms of speech, which is too "
+                f"little to use. Speak continuously for a few seconds."
             )
         if self._spectral is None or self._cepstral is None:
             self._spectral = voice.spectral
             self._cepstral = voice.cepstral
         else:
-            weight = float(self._samples)
-            self._spectral = (self._spectral * weight + voice.spectral) / (weight + 1.0)
-            self._cepstral = (self._cepstral * weight + voice.cepstral) / (weight + 1.0)
+            # Weight by speech duration: a longer take describes the voice better.
+            weight = float(self._voiced_ms)
+            total = weight + voice.voiced_ms
+            self._spectral = (self._spectral * weight + voice.spectral * voice.voiced_ms) / total
+            self._cepstral = (self._cepstral * weight + voice.cepstral * voice.voiced_ms) / total
         self._samples += 1
         self._voiced_ms += voice.voiced_ms
         return self.state()
 
     def verify(self, audio: FloatAudio) -> SpeakerVerdict:
-        if self._spectral is None or self._cepstral is None:
+        """Attributes the current speaker using recent speech, not one utterance."""
+        if not self.enrolled or self._spectral is None or self._cepstral is None:
             return SpeakerVerdict(SpeakerDecision.UNKNOWN, 0.0, False, 0)
-        voice = profile(audio, self.settings.sample_rate)
+        window = self._remember(audio)
+        voice = profile(window, self.settings.sample_rate)
         if voice.voiced_ms < self.settings.speaker_min_ms:
             # Too little voice to judge. Saying so beats a coin flip.
             return SpeakerVerdict(SpeakerDecision.UNKNOWN, 0.0, True, voice.voiced_ms)

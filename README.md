@@ -25,8 +25,9 @@ record:
 - **position is explicit** — 64 stations across the mouth with skip, back, resume
   and stale-context protection, so a value cannot land where you have already
   left;
-- **only the enrolled clinician can chart** — optional, local, revocable voice
-  attribution, always visible and always overridable;
+- **the recognizer is given the vocabulary** — while the chart waits for probing
+  depths the decoder can emit little but digits, so "for" cannot arrive where
+  four was meant and a handpiece cannot become "Bye bye.";
 - **every decision is explainable** — each audit entry opens to the stage that
   made it.
 
@@ -47,6 +48,9 @@ npm install
 npm run setup
 npm run dev
 ```
+
+`npm run setup` installs the Python environment and downloads the grammar
+recognizer model (~128 MB) into `models/`.
 
 Open `http://127.0.0.1:5173`. The single development command starts the local ASR
 API on port 8000 and Vite on port 5173, proxies `/api` and `/ws`, and shuts both
@@ -89,6 +93,30 @@ are converted only when the whole utterance fits the charting grammar; an extra
 value is rejected as a unit, which is what prevents a single insertion from
 shifting later sites.
 
+## Which recognizer, and why
+
+Measured on the 30 spoken dental phrases in
+`evaluation/fixtures/synthetic-dental/`:
+
+| engine | word error rate | exact match | ms/utterance |
+| --- | ---: | ---: | ---: |
+| Whisper `tiny.en`, beam 5 | 0.787 | 40% | 272 |
+| grammar-constrained | **0.060** | **93%** | **163** |
+
+Whisper size does not fix this. Across `tiny.en`, `base.en`, `distil-small.en`
+and `small.en`, exact match on these phrases sits between 23% and 30%, and
+`base.en` scores *below* `tiny.en`. The problem is not capacity: a thirty-second
+sequence model is being asked to resolve a half-second command with no context,
+and it hallucinates confident words on short audio at every size.
+
+Giving the recognizer the vocabulary changes the shape of the problem. Inside a
+grammar the decoder chooses between the words a clinician could actually be
+saying, so the dominant failures stop being possible rather than merely unlikely.
+Speech that fits nothing returns an unknown marker, which is far more useful than
+a confident wrong answer.
+
+Whisper remains for free-form dictation, where an open vocabulary is the point.
+
 ## Runtime endpoints
 
 - `GET /api/health` — model status, name, device, compute type, sample rate, the
@@ -100,7 +128,7 @@ shifting later sites.
 - `POST /api/speaker/enroll` — raw PCM16 body; adds a sample to the local voice
   profile.
 - `POST /api/speaker/reset` — revokes the profile immediately.
-- `WS /ws/asr` — JSON `start`/`stop`/`ping`/`retry_model` controls and
+- `WS /ws/asr` — JSON `start`/`stop`/`context`/`ping`/`retry_model` controls and
   little-endian mono PCM16 audio; emits model, speech, partial, final, metrics,
   stop and error messages.
 
@@ -113,13 +141,22 @@ profiles and an explicit list of what is not built.
 The defaults are chosen for low latency on a CPU-only development machine:
 
 ```bash
-ASR_MODEL=tiny.en
+ASR_ENGINE=auto                 # auto | grammar | whisper
+ASR_MODEL=tiny.en               # open-vocabulary fallback
+ASR_BEAM_SIZE=5
 ASR_DEVICE=cpu
 ASR_COMPUTE_TYPE=int8
 ASR_MODEL_DIR=models
+ASR_GRAMMAR_MODEL_DIR=models/vosk-model-en-us-0.22-lgraph
 ASR_DENOISE_PROFILE=none        # none | highpass | spectral
-ASR_BIAS_PROMPT=true            # bias decoding with the dental prompt
+ASR_NO_SPEECH_THRESHOLD=0.6     # above this a final is refused as non-speech
+ASR_MIN_FINAL_MS=250            # shorter audio is not decoded at all
 ```
+
+`auto` routes by clinical context: the grammar recognizer answers while the chart
+is waiting for clinical values, and Whisper answers when the vocabulary has to
+stay open. `grammar` and `whisper` pin one engine, which is how the two are
+compared.
 
 Endpointing is adaptive within a band. `ASR_END_SILENCE_MS` is the starting
 point; `ASR_MIN_END_SILENCE_MS` and `ASR_MAX_END_SILENCE_MS` bound it, and
@@ -129,9 +166,13 @@ point; `ASR_MIN_END_SILENCE_MS` and `ASR_MAX_END_SILENCE_MS` bound it, and
 Change these only with replay evidence; shorter silence improves latency but can
 clip natural pauses.
 
-Speaker attribution: `ASR_SPEAKER_ACCEPT`, `ASR_SPEAKER_REJECT`,
-`ASR_SPEAKER_MIN_MS`, `ASR_SPEAKER_ENROLL_MS`. Re-run
-`uv run python scripts/calibrate_speaker.py` after changing them.
+Speaker attribution is **off by default and does not currently work**; see
+[EVALUATION.md](./EVALUATION.md#speaker-attribution-does-not-separate-speakers).
+Enrollment and short-utterance handling were repaired, but the underlying
+profile does not distinguish voices at clinical utterance lengths, so leave
+`requireSpeaker` off. Its settings are `ASR_SPEAKER_ACCEPT`,
+`ASR_SPEAKER_REJECT`, `ASR_SPEAKER_MIN_MS`, `ASR_SPEAKER_ENROLL_MS` and
+`ASR_SPEAKER_WINDOW_MS`.
 
 Browser WebSockets are restricted to the local Vite origins. Set a comma-separated
 `ASR_ALLOWED_ORIGINS` when deploying behind a different trusted origin.

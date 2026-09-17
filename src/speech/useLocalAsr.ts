@@ -14,6 +14,7 @@ import {
   type AsrServerMessage,
   type AsrStatus,
   type CadenceInfo,
+  type ClinicalExpectation,
   type EnrollmentState,
   type RuntimeInfo,
 } from './protocol';
@@ -44,6 +45,8 @@ export interface LocalAsrController {
   start: () => Promise<void>;
   stop: () => void;
   retry: () => void;
+  /** Tells the service what the chart is waiting for, so it can narrow the grammar. */
+  declareExpectation: (expectation: ClinicalExpectation) => void;
   enroll: (seconds?: number) => Promise<void>;
   revokeEnrollment: () => Promise<void>;
 }
@@ -214,6 +217,9 @@ export function useLocalAsr({ onFinal, contextVersion }: UseLocalAsrOptions): Lo
     socketRef.current = socket;
     socket.onopen = () => {
       reconnectAttemptRef.current = 0;
+      // The service keeps expectation per connection, so a reconnect has to
+      // re-declare it or the grammar silently reverts to the widest one.
+      declaredExpectationRef.current = null;
     };
     socket.onmessage = (event: MessageEvent<string>) => {
       const message = parseServerMessage(event.data);
@@ -323,6 +329,16 @@ export function useLocalAsr({ onFinal, contextVersion }: UseLocalAsrOptions): Lo
       return socket?.readyState === WebSocket.OPEN ? 'ready' : 'offline';
     });
   }, [releaseCapture]);
+
+  const declaredExpectationRef = useRef<ClinicalExpectation | null>(null);
+
+  const declareExpectation = useCallback((expectation: ClinicalExpectation) => {
+    if (declaredExpectationRef.current === expectation) return;
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    declaredExpectationRef.current = expectation;
+    socket.send(JSON.stringify({ type: 'context', expect: expectation }));
+  }, []);
 
   const retry = useCallback(() => {
     if (!supported) return;
@@ -453,6 +469,7 @@ export function useLocalAsr({ onFinal, contextVersion }: UseLocalAsrOptions): Lo
     start,
     stop,
     retry,
+    declareExpectation,
     enroll,
     revokeEnrollment,
   };

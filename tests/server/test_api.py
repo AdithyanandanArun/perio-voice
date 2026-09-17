@@ -150,10 +150,18 @@ def test_speaker_enrollment_is_explicit_and_revocable() -> None:
     with TestClient(app) as client:
         assert client.get("/api/speaker").json()["enrolled"] is False
 
-        too_short = client.post("/api/speaker/enroll", content=_voiced_pcm(0.2))
-        assert too_short.status_code == 400
-        assert "at least" in too_short.json()["error"]
-        assert client.get("/api/speaker").json()["enrolled"] is False
+        # A take with essentially no speech is refused outright.
+        empty = client.post("/api/speaker/enroll", content=b"\x00\x00" * 400)
+        assert empty.status_code == 400
+        assert "too little" in empty.json()["error"]
+
+        # A short take is accepted and accumulates, but does not complete
+        # enrollment on its own; the interface shows progress toward the target.
+        partial = client.post("/api/speaker/enroll", content=_voiced_pcm(0.4))
+        assert partial.status_code == 200
+        assert partial.json()["enrolled"] is False
+        assert 0 < partial.json()["voicedMs"] < partial.json()["requiredMs"]
+        client.post("/api/speaker/reset")
 
         enrolled = client.post("/api/speaker/enroll", content=_voiced_pcm(3.0))
         assert enrolled.status_code == 200
@@ -186,7 +194,8 @@ def test_finals_carry_attribution_only_once_a_clinician_is_enrolled() -> None:
                 socket.receive_json()
                 socket.receive_json()
                 socket.send_json({"type": "start"})
-                socket.send_bytes(pcm_frame(0.2))
+                for _ in range(6):
+                    socket.send_bytes(pcm_frame(0.2))
                 socket.send_bytes(pcm_frame(0))
                 socket.send_json({"type": "stop"})
                 return receive_until(socket, "final")

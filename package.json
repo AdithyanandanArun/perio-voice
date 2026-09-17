@@ -7,7 +7,7 @@
     "node": "^20.19.0 || >=22.12.0"
   },
   "scripts": {
-    "setup": "uv sync --frozen",
+    "setup": "uv sync --frozen && uv run python scripts/fetch_grammar_model.py",
     "dev": "node scripts/dev.mjs",
     "dev:web": "vite",
     "dev:asr": "uv run uvicorn server.app:app --host 127.0.0.1 --port 8000 --reload",

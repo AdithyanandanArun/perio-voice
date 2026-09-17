@@ -38,6 +38,10 @@ require('README.md', readme, [
   'EVALUATION.md',
   'GATES.md',
   'ASR_DENOISE_PROFILE',
+  'ASR_ENGINE',
+  'ASR_MIN_FINAL_MS',
+  // The recognizer choice has to be justified where someone configuring it looks.
+  'grammar-constrained',
   'ASR_SPEAKER_ACCEPT',
   'ASR_MIN_END_SILENCE_MS',
   'scripts/evaluate-clinical.mjs',
@@ -87,6 +91,9 @@ require('EVALUATION.md', evaluation, [
   'word error rate',
   // The limits have to be stated, not just the numbers.
   'does and does not establish',
+  // The speaker finding is negative; it must be stated, not merely implied.
+  'does not separate speakers',
+  'Model size is not the variable',
 ]);
 
 if (failures.length > 0) {

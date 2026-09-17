@@ -145,9 +145,12 @@ async def test_a_finished_utterance_moves_the_live_endpoint() -> None:
     await session.start()
     frame = np.full(1_600, 6_000, dtype="<i2").tobytes()
     silence = np.zeros(1_600, dtype="<i2").tobytes()
-    await session.feed(frame, 100)
-    await session.feed(silence, 200)
-    await session.stop(900)
+    # Long enough to clear the minimum final duration; a 100 ms blip is now
+    # refused before decoding rather than hallucinated over.
+    for offset in range(6):
+        await session.feed(frame, 100 + offset * 100)
+    await session.feed(silence, 800)
+    await session.stop(1_500)
     await session.close()
 
     final = next(message for message in messages if message["type"] == "final")

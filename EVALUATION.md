@@ -77,6 +77,90 @@ a real promotion decision needs recordings from one. The speech is one public
 fixture of a single speaker, so this tier says nothing about accent or dental
 vocabulary recognition.
 
+## Recognizer tier
+
+`scripts/evaluate_recognizers.py` scores engines on
+`evaluation/fixtures/synthetic-dental/` — thirty charting utterances at a mean of
+0.91 s, which is the length the product actually hears. It exists because the
+long-form fixture reported word error rate 0.000 while real charting worked about
+a quarter of the time.
+
+| engine | word error rate | exact match | ms/utterance |
+| --- | ---: | ---: | ---: |
+| Whisper `tiny.en`, beam 5 | 0.787 | 40% | 272 |
+| grammar-constrained | 0.060 | 93% | 163 |
+
+### Model size is not the variable
+
+Measured on short utterances before the grammar recognizer existed:
+
+| engine | exact match |
+| --- | ---: |
+| Whisper `tiny.en` | 30% |
+| Whisper `base.en` | 23% |
+| Whisper `distil-small.en` | 23% |
+| Whisper `small.en` | 27% |
+
+`base.en` scores below `tiny.en`. Six calling conventions were also tried —
+padding to one and three seconds, `vad_filter`, temperature fallback, a
+no-speech threshold — and none exceeded 33%. Padding short audio to three seconds
+was actively harmful, producing word error rates above 29 from hallucination over
+the silence. Whisper is a thirty-second sequence model being asked to resolve a
+half-second command; that is a shape mismatch, not a capacity limit.
+
+### Two words had to be removed from the grammar
+
+The routing gate caught both, and both would have been chart errors:
+
+- `free` is a near-homophone of `three` and won inside a grammar containing
+  both, so the utterance "three" was recognized as "free".
+- `pus` is short and collides with ordinary speech: "can you pass me that" was
+  recognized as "pus meant that", which would have written a suppuration finding
+  out of a request to an assistant.
+
+Both have unambiguous synonyms already in the grammar. The gate now fails on any
+chartable content emitted from conversational audio, not just on digits.
+
+### What this does and does not establish
+
+The audio is **synthesized, one voice, no room**. Absolute accuracy here is
+optimistic for every engine. Use it to compare engines against each other, which
+is what the gate does; do not quote 93% as a recognition rate. A recorded fixture
+from real clinicians is the measurement that settles accuracy, and
+`evaluation/fixtures/dental/` exists to hold one.
+
+## Speaker attribution does not separate speakers
+
+Stated plainly because the previous version of this document implied otherwise.
+
+The original calibration compared 5.5-second segments against 5.5-second
+segments from one recording and reported a comfortable +0.0507 margin. That is
+not the comparison the product makes. It enrolls on several seconds of speech and
+then verifies half-second utterances, and measured at those durations:
+
+| verified window | enrolled speaker, worst | other voice, best | margin |
+| --- | ---: | ---: | ---: |
+| 0.5 s | 0.7662 | 0.9627 | **−0.1965** |
+| 1.0 s | 0.9226 | 0.9643 | −0.0417 |
+| 2.0 s | 0.9582 | 0.9529 | +0.0053 |
+| 4.0 s | 0.9704 | 0.8540 | +0.1164 |
+
+Below two seconds the distributions **invert**: a different voice scores higher
+than the enrolled one. Verifying a rolling four-second window instead of each
+utterance recovers some of this, but on clean single-speaker audio it still
+leaves a margin of +0.0007, which is not separation.
+
+Two real defects were fixed and are gated — enrollment now completes from one
+ordinary take (4,040 ms of usable audio from six seconds, against 1,870 ms
+before, which is why it used to require shouting), and half-second utterances
+now produce a decision instead of a permanent unknown. But the discrimination
+itself is not there, so `G33` is abandoned rather than tuned until it passes, and
+the feature stays off by default.
+
+A trained speaker-embedding model behind the same interface is the fix. A
+cepstral profile was always going to be weak; the mistake was calibrating it on
+the wrong pairing and believing the number.
+
 ## Clinical tier
 
 `scripts/evaluate-clinical.mjs` replays `evaluation/corpus/clinical.json` through

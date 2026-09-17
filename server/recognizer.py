@@ -32,6 +32,11 @@ class RecognitionResult:
     text: str
     decode_ms: int
     words: tuple[WordTiming, ...] = ()
+    """Share of tokens the grammar could not account for. 1.0 means nothing fit."""
+    unknown_ratio: float = 0.0
+    """Whisper's own estimate that the audio is not speech at all."""
+    no_speech_prob: float = 0.0
+    engine: str = "whisper"
 
 
 class Recognizer(Protocol):
@@ -56,6 +61,7 @@ class FasterWhisperRecognizer:
         self.language = settings.language
         self.model_dir = settings.model_dir
         self.bias_prompt = settings.bias_prompt
+        self.beam_size = settings.beam_size
         self.status = ModelStatus.IDLE
         self.error: str | None = None
         self._model: object | None = None
@@ -102,9 +108,10 @@ class FasterWhisperRecognizer:
         segments, _ = model.transcribe(  # type: ignore[attr-defined]
             audio,
             language=self.language,
-            beam_size=1,
-            best_of=1,
-            temperature=0.0,
+            beam_size=self.beam_size,
+            best_of=self.beam_size,
+            # No temperature pin: leaving faster-whisper's default fallback in
+            # place lets a bad greedy decode retry instead of being returned.
             condition_on_previous_text=False,
             # Biasing costs nothing at decode time and is the cheapest available
             # defence against a general model substituting everyday English for
@@ -116,6 +123,10 @@ class FasterWhisperRecognizer:
         )
         materialized = list(segments)
         text = " ".join(segment.text.strip() for segment in materialized).strip()
+        # Whisper's own estimate that the audio was not speech. Measured to
+        # separate silence, hiss, suction and handpieces (0.68-0.96) from real
+        # speech (0.02-0.50); avg_logprob does not separate them and is not used.
+        no_speech = max((float(segment.no_speech_prob) for segment in materialized), default=0.0)
         words = tuple(
             WordTiming(
                 word=word.word.strip(),
@@ -130,4 +141,6 @@ class FasterWhisperRecognizer:
             text=text,
             decode_ms=round((time.perf_counter() - started) * 1_000),
             words=words,
+            no_speech_prob=round(no_speech, 4),
+            engine="whisper",
         )

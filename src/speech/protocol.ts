@@ -34,6 +34,9 @@ export interface EnrollmentState {
   voicedMs: number;
 }
 
+/** What the clinical context is waiting for, which selects the recognizer grammar. */
+export type ClinicalExpectation = 'depths' | 'tooth' | 'findings' | 'commands' | 'clinical' | 'free';
+
 export interface RuntimeInfo {
   protocol: number;
   promptVersion: string;
@@ -42,6 +45,7 @@ export interface RuntimeInfo {
   endSilenceMs: number;
   endpointBandMs: [number, number];
   cadenceAdaptive: boolean;
+  engine?: string;
 }
 
 /** Everything one finished utterance carries across the recognition boundary. */
@@ -86,6 +90,11 @@ export interface AsrServerMessage {
   droppedPartials?: number;
   words?: WordMessage[];
   speaker?: SpeakerMessage | null;
+  engine?: string;
+  unknownRatio?: number;
+  noSpeechProb?: number;
+  reason?: string;
+  expect?: string;
   cadence?: Partial<CadenceInfo> | null;
   error?: string | null;
   message?: string;

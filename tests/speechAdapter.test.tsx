@@ -192,6 +192,40 @@ describe('local ASR browser adapter', () => {
     expect(socket.readyState).toBe(MockWebSocket.CLOSED);
   });
 
+  it('declares the clinical expectation so the service can narrow its grammar', async () => {
+    installAudioEnvironment();
+    const { result } = renderHook(() => useLocalAsr({ onFinal: vi.fn() }));
+    const socket = MockWebSocket.instances[0];
+    ready(socket);
+
+    act(() => result.current.declareExpectation('depths'));
+    expect(socket.sent).toContain(JSON.stringify({ type: 'context', expect: 'depths' }));
+
+    // Repeating the same expectation must not re-send; it changes nothing.
+    const sentCount = socket.sent.length;
+    act(() => result.current.declareExpectation('depths'));
+    expect(socket.sent).toHaveLength(sentCount);
+
+    act(() => result.current.declareExpectation('clinical'));
+    expect(socket.sent).toContain(JSON.stringify({ type: 'context', expect: 'clinical' }));
+  });
+
+  it('re-declares the expectation after a reconnect, since the service forgets it', () => {
+    vi.useFakeTimers();
+    installAudioEnvironment();
+    const { result } = renderHook(() => useLocalAsr({ onFinal: vi.fn() }));
+    ready(MockWebSocket.instances[0]);
+    act(() => result.current.declareExpectation('depths'));
+
+    act(() => MockWebSocket.instances[0].close());
+    act(() => vi.advanceTimersByTime(500));
+    const reconnected = MockWebSocket.instances[1];
+    ready(reconnected);
+
+    act(() => result.current.declareExpectation('depths'));
+    expect(reconnected.sent).toContain(JSON.stringify({ type: 'context', expect: 'depths' }));
+  });
+
   it('reconnects after a dropped service connection', async () => {
     vi.useFakeTimers();
     installAudioEnvironment();
