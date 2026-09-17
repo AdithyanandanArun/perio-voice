@@ -72,15 +72,31 @@ async def main() -> int:
             )
     print("routing by expectation: checked")
 
-    # 2. A narrowed grammar must not contain vocabulary from another context.
+    # 2. No expectation may narrow the vocabulary.
+    #
+    # This assertion used to be the opposite: it required the depth grammar to
+    # exclude surface names. That was the bug. A constrained decoder does not
+    # decline words outside its grammar, it emits the nearest word inside it, so
+    # saying "buccal" while depths were expected was charted as "pocket". A
+    # clinician may say anything at any moment, so every expectation must reach
+    # the whole clinical vocabulary.
     depth_words = set(grammar_for(Expectation.DEPTHS))
-    if "buccal" in depth_words or "lingual" in depth_words:
-        failures.append("the depth grammar can emit surface names, so it is not narrowed")
+    for surface in ("buccal", "lingual"):
+        if surface not in depth_words:
+            failures.append(
+                f"the depth grammar cannot emit {surface!r}, so saying it while depths "
+                f"are expected will be substituted rather than heard"
+            )
     if not set(DIGITS).issubset(depth_words):
         failures.append("the depth grammar cannot emit every legal probing depth")
-    tooth_words = set(grammar_for(Expectation.TOOTH))
-    if "thirty" not in tooth_words:
-        failures.append("the tooth grammar cannot reach the upper tooth numbers")
+    if "thirty" not in depth_words:
+        failures.append("the depth grammar cannot reach the upper tooth numbers")
+    for expectation in Expectation:
+        if set(grammar_for(expectation)) != depth_words:
+            failures.append(
+                f"expectation {expectation.value} reaches a different vocabulary than "
+                f"{Expectation.DEPTHS.value}, so narrowing has returned"
+            )
 
     # 3. Out-of-grammar speech must yield no clinical value.
     grammar = VoskGrammarRecognizer(settings)
