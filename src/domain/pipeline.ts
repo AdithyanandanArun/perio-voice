@@ -19,7 +19,7 @@ import { canonicalize } from './lexicon';
 import { acousticConfidence, buildLattice } from './lattice';
 import { classifyRelevance, explainRelevance, type RelevanceDecision } from './relevance';
 import { resolveWithContext } from './contextResolver';
-import { parseIntents, type Intent, type ParseResult } from './grammar';
+import { parseIntents, type Intent, type ParseResult, type WorkflowCommand } from './grammar';
 import { describeAssertion, needsPolarityConfirmation, type FindingAssertion } from './negation';
 import { guardIntent } from './sequenceGuard';
 import { describeCorrection, entryForSite, resolveCorrection } from './correction';
@@ -48,11 +48,13 @@ import {
   addPending,
   bumpCounter,
   commitChanges,
+  findPending,
   recordEvent,
   recordParserDuration,
+  removePending,
   utteranceLatency,
 } from './session';
-import { SITES_PER_STATION, type ChartChange, type ClinicalEventKind, type ClinicalSession, type MeasurementType, type StageName, type StageOutcome, type StageTrace, type UtteranceInput } from './types';
+import { SITES_PER_STATION, type ChartChange, type PipelineOverrides, type ClinicalEventKind, type ClinicalSession, type MeasurementType, type StageName, type StageOutcome, type StageTrace, type UtteranceInput } from './types';
 
 function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -101,6 +103,7 @@ export function processUtterance(
   const trace = new Trace();
   const started = now();
   const at = input.timing.observedAt;
+  const approved = input.overrides ?? {};
 
   const finish = (
     next: ClinicalSession,
@@ -129,7 +132,7 @@ export function processUtterance(
 
   /* -------- 1. speaker attribution -------- */
   const speaker = input.speaker;
-  if (speaker !== null && session.settings.requireSpeaker && !speaker.overridden) {
+  if (speaker !== null && session.settings.requireSpeaker && !speaker.overridden && approved.speaker !== true) {
     if (speaker.decision === 'other') {
       trace.add('speaker', 'block', `attributed to another speaker (${speaker.similarity.toFixed(2)})`);
       return finish(bumpCounter(session, 'blockedSpeaker'), 'ignored', 'Speech was not attributed to the enrolled clinician, so nothing was charted.');
@@ -194,7 +197,7 @@ export function processUtterance(
   if (relevance.label === 'non_chartable' && enforcing) {
     return finish(scored, 'ignored', 'Speech contained non-charting language, so no clinical values were changed.');
   }
-  if (relevance.label === 'uncertain' && enforcing) {
+  if (relevance.label === 'uncertain' && enforcing && approved.relevance !== true) {
     scored = addPending(scored, {
       reason: 'uncertain_relevance',
       transcript: input.transcript,
@@ -249,7 +252,7 @@ export function processUtterance(
   let latencyEligible = false;
 
   for (const intent of parse.intents) {
-    const outcome = applyIntent(working, intent, input, trace, parse);
+    const outcome = applyIntent(working, intent, input, trace, parse, approved);
     working = outcome.session;
     if (outcome.message !== '') messages.push(outcome.message);
     changes.push(...outcome.changes);
@@ -321,6 +324,7 @@ function applyIntent(
   input: UtteranceInput,
   trace: Trace,
   parse: ParseResult,
+  approved: PipelineOverrides,
 ): Outcome {
   const at = input.timing.observedAt;
   switch (intent.kind) {
@@ -330,11 +334,11 @@ function applyIntent(
       return applyCommand(session, intent, at, trace);
     case 'measurements':
     case 'replace_sequence':
-      return applyValues(session, intent, at, trace);
+      return applyValues(session, intent, at, trace, approved);
     case 'correction':
-      return applyCorrection(session, intent, input, trace);
+      return applyCorrection(session, intent, input, trace, approved);
     case 'findings':
-      return applyFindings(session, intent.assertions, input, trace, parse);
+      return applyFindings(session, intent.assertions, input, trace, parse, approved);
   }
 }
 
@@ -349,10 +353,10 @@ function applyContext(
     surface: intent.surface ?? undefined,
   });
   if (!move.changed && move.message.includes('between 1 and 32')) {
-    trace.add('commit', 'reject', move.message);
+    trace.add('commit', 'reject', `tooth ${intent.tooth ?? '—'} is outside 1–32`);
     return halt(session, 'rejected', move.message);
   }
-  trace.add('commit', 'pass', move.message);
+  trace.add('commit', 'pass', `tooth ${move.context.tooth} ${move.context.surface}, version ${move.context.version}`);
   void at;
   return passthrough(
     { ...session, context: move.context, workflow: move.workflow },
@@ -377,7 +381,11 @@ function applyCommand(
           : intent.command === 'back'
             ? retreatStation(session.context, session.workflow, session.charts)
             : resumeStation(session.context, session.workflow, session.charts);
-      trace.add('commit', move.changed ? 'pass' : 'reject', move.message);
+      trace.add(
+        'commit',
+        move.changed ? 'pass' : 'reject',
+        `${intent.command} → tooth ${move.context.tooth} ${move.context.surface}`,
+      );
       return passthrough(
         { ...session, context: move.context, workflow: move.workflow },
         'context',
@@ -395,7 +403,7 @@ function applyCommand(
         before: session.teeth[tooth]?.missing ?? false,
         after: true,
       };
-      trace.add('commit', 'pass', move.message);
+      trace.add('commit', 'pass', `tooth ${tooth} marked absent`);
       const next = commitChanges(
         { ...session, context: move.context, workflow: move.workflow },
         [change],
@@ -448,7 +456,7 @@ function applyClear(session: ClinicalSession, at: number, trace: Trace): Outcome
   }
   const next = commitChanges(session, changes, at);
   const message = `Cleared tooth ${tooth}, ${surface}.`;
-  trace.add('commit', 'pass', message);
+  trace.add('commit', 'pass', `${changes.length} value(s) cleared`);
   return {
     session: { ...next, context: { ...next.context, position: 0 } },
     kind: 'context',
@@ -470,7 +478,7 @@ function applyUndo(session: ClinicalSession, at: number, trace: Trace): Outcome 
   const inverse = invertChanges(entry.changes);
   const next = commitChanges({ ...session, journal: markUndone(session.journal, entry.id, true) }, inverse, at);
   const message = `Reversed “${entry.transcript}”.`;
-  trace.add('commit', 'pass', message);
+  trace.add('commit', 'pass', `reversed journal entry ${entry.id}, ${inverse.length} change(s)`);
   return {
     session: refreshPosition(next),
     kind: 'undo',
@@ -495,7 +503,7 @@ function applyRedo(session: ClinicalSession, at: number, trace: Trace): Outcome 
     at,
   );
   const message = `Reapplied “${entry.transcript}”.`;
-  trace.add('commit', 'pass', message);
+  trace.add('commit', 'pass', `reapplied journal entry ${entry.id}, ${entry.changes.length} change(s)`);
   return {
     session: refreshPosition(next),
     kind: 'redo',
@@ -513,21 +521,25 @@ function applyValues(
   intent: Extract<Intent, { kind: 'measurements' | 'replace_sequence' }>,
   at: number,
   trace: Trace,
+  approved: PipelineOverrides = {},
 ): Outcome {
   const advanced = maybeAdvanceForValues(session, intent, trace);
   const { tooth, surface } = advanced.context;
   const record = recordAt(advanced.charts, tooth, surface);
   session = advanced;
   const verdict = guardIntent(intent, session.context, record);
+  // Trace details stay structural rather than repeating the message, so the
+  // explanation adds information instead of echoing it.
+  const shape = `${intent.values.length} value(s), ${SITES_PER_STATION - nextOpenPosition(record, intent.measurement)} site(s) open`;
   if (verdict.outcome === 'reject') {
-    trace.add('sequence', 'reject', `${verdict.code}: ${verdict.reason}`);
+    trace.add('sequence', 'reject', `${verdict.code} — ${shape}`);
     return halt(session, 'rejected', verdict.reason);
   }
-  if (verdict.outcome === 'confirm') {
-    trace.add('sequence', 'confirm', `${verdict.code}: ${verdict.reason}`);
+  if (verdict.outcome === 'confirm' && approved.overwrite !== true) {
+    trace.add('sequence', 'confirm', `${verdict.code} — ${shape}`);
     return halt(session, 'confirmation', verdict.reason);
   }
-  trace.add('sequence', 'pass', `${verdict.placements.length} site(s) at ${verdict.placements.join(', ')}`);
+  trace.add('sequence', 'pass', `${shape}, placing at ${verdict.placements.map((index) => index + 1).join(', ')}`);
 
   const field = intent.measurement === 'recession' ? 'recession' : 'probingDepths';
   const existing = measurementValues(record, intent.measurement);
@@ -562,7 +574,7 @@ function applyValues(
     intent.kind === 'replace_sequence'
       ? `Replaced the active sequence with ${intent.values.join(' / ')} mm.`
       : describePlacement(intent.values, verdict.placements);
-  trace.add('commit', 'pass', message);
+  trace.add('commit', 'pass', `${changes.length} change(s) on tooth ${tooth} ${surface}`);
   return {
     session: next,
     kind: intent.kind === 'replace_sequence' ? 'sequence_replacement' : measurementKind(intent.measurement),
@@ -590,6 +602,7 @@ function applyCorrection(
   intent: Extract<Intent, { kind: 'correction' }>,
   input: UtteranceInput,
   trace: Trace,
+  approved: PipelineOverrides = {},
 ): Outcome {
   const at = input.timing.observedAt;
   const record = recordAt(session.charts, session.context.tooth, session.context.surface);
@@ -612,7 +625,7 @@ function applyCorrection(
     trace.add('correction', 'reject', plan.reason);
     return halt(session, 'rejected', plan.reason);
   }
-  if (plan.outcome === 'confirm') {
+  if (plan.outcome === 'confirm' && approved.correction !== true) {
     trace.add('correction', 'confirm', plan.reason);
     const held = addPending(session, {
       reason: 'ambiguous_correction',
@@ -634,7 +647,11 @@ function applyCorrection(
   };
   const next = refreshPosition(commitChanges(session, [change], at));
   const message = describeCorrection(plan, intent.value, `site ${plan.siteIndex + 1}`);
-  trace.add('correction', 'pass', `${plan.reason}; ${message}`);
+  trace.add(
+    'correction',
+    'pass',
+    `${plan.reason}; site ${plan.siteIndex + 1} ${plan.previous ?? '—'} → ${intent.value}`,
+  );
   return {
     session: next,
     kind: 'correction',
@@ -653,6 +670,7 @@ function applyFindings(
   input: UtteranceInput,
   trace: Trace,
   parse: ParseResult,
+  approved: PipelineOverrides = {},
 ): Outcome {
   void parse;
   const at = input.timing.observedAt;
@@ -662,7 +680,7 @@ function applyFindings(
     return halt(session, 'rejected', verdict.reason);
   }
 
-  const uncertain = assertions.filter(needsPolarityConfirmation);
+  const uncertain = approved.polarity === true ? [] : assertions.filter(needsPolarityConfirmation);
   if (uncertain.length > 0) {
     const held = addPending(session, {
       reason: 'low_confidence_polarity',
@@ -695,7 +713,7 @@ function applyFindings(
   trace.add('negation', 'pass', assertions.map(describeAssertion).join(', '));
   const next = commitChanges(session, changes, at);
   const message = messages.join(' ');
-  trace.add('commit', 'pass', message);
+  trace.add('commit', 'pass', `${changes.length} finding change(s) on tooth ${tooth}`);
   return {
     session: next,
     kind: assertions.every((assertion) => assertion.finding === 'bleeding') ? 'bleeding' : 'finding',
@@ -740,6 +758,74 @@ function refreshPosition(session: ClinicalSession): ClinicalSession {
     ...session,
     context: { ...session.context, position: nextOpenPosition(record, session.context.measurement) },
   };
+}
+
+/**
+ * A workflow command issued from the interface rather than spoken.
+ *
+ * It runs the same transition speech would, so a button and an utterance can
+ * never disagree about what "back" means.
+ */
+export function applyWorkflowCommand(
+  session: ClinicalSession,
+  command: WorkflowCommand,
+  occurredAt: number,
+  label = 'Workflow control',
+): ClinicalSession {
+  const trace = new Trace();
+  const outcome = applyCommand(session, { kind: 'command', command, tooth: null }, occurredAt, trace);
+  return recordEvent(outcome.session, {
+    kind: outcome.kind,
+    transcript: label,
+    message: outcome.message,
+    occurredAt,
+    latencyMs: null,
+    trace: trace.snapshot(),
+    changes: outcome.changes,
+    compensates: outcome.compensates ?? undefined,
+  });
+}
+
+/**
+ * Settles a held confirmation.
+ *
+ * Approving replays the original utterance with the operator's approval
+ * attached, so the value reaches the chart through the same stages as any other
+ * utterance and the audit trail shows why it was allowed.
+ */
+export function resolveConfirmation(
+  session: ClinicalSession,
+  id: number,
+  approve: boolean,
+  occurredAt: number,
+): ClinicalSession {
+  const pending = findPending(session, id);
+  if (pending === null) return session;
+  const cleared = removePending(session, id);
+  if (!approve) {
+    return recordEvent(cleared, {
+      kind: 'ignored',
+      transcript: pending.transcript,
+      message: `Discarded after review: ${pending.message}`,
+      occurredAt,
+      latencyMs: null,
+      trace: [
+        { stage: 'commit', outcome: 'block', detail: 'operator declined', durationMs: 0 },
+      ],
+    });
+  }
+  return processUtterance(cleared, {
+    ...pending.input,
+    timing: { startedAt: pending.input.timing.startedAt, observedAt: occurredAt },
+    observedVersion: null,
+    overrides: {
+      speaker: true,
+      relevance: true,
+      polarity: true,
+      overwrite: true,
+      correction: true,
+    },
+  });
 }
 
 export { siteName, entryForSite };

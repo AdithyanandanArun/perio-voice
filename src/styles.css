@@ -334,3 +334,88 @@ tbody td { text-transform: capitalize; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+
+/* ---------------------------------------------------------------- */
+/* Clinical intelligence layer                                      */
+/* ---------------------------------------------------------------- */
+
+.confirmations-panel { padding: 24px; margin-bottom: 22px; border-color: var(--warning); background: linear-gradient(145deg, rgba(251, 191, 36, 0.08), rgba(9, 27, 31, 0.96)); }
+.confirmations-panel .panel-heading svg { color: var(--warning); }
+.confirmation-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+.confirmation-list li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; background: #07191d; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.confirmation-list li > div { min-width: 0; }
+.confirmation-reason { display: block; color: var(--warning); font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.confirmation-list strong { display: block; margin: 6px 0; font-size: 14px; }
+.confirmation-list small { display: block; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+.confirmation-actions { display: flex; flex: none; gap: 8px; }
+
+.workflow-panel { padding: 24px; }
+.workflow-position { padding: 16px; background: #07191d; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.workflow-position > div:first-child span { display: block; color: var(--text-muted); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+.workflow-position strong { display: block; margin: 6px 0 2px; font-family: "Fira Code", ui-monospace, monospace; font-size: 22px; font-variant-numeric: tabular-nums; }
+.workflow-position small { display: block; color: var(--text-muted); font-size: 12px; }
+.workflow-position .progress-track { margin: 14px 0 8px; }
+.workflow-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-top: 16px; }
+.workflow-controls button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 12px; color: var(--text); font-size: 12px; font-weight: 700; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 10px; }
+.workflow-controls button:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-raised); }
+.skipped-teeth { margin: 14px 0 0; color: var(--warning); font-size: 12px; }
+.workflow-settings { margin: 18px 0 0; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.workflow-settings legend { padding: 0 6px; color: var(--text-muted); font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.workflow-settings label { display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; cursor: pointer; }
+.workflow-settings label:first-of-type { margin-top: 4px; }
+.workflow-settings input { margin-top: 3px; accent-color: var(--primary); }
+.workflow-settings span { font-size: 13px; font-weight: 700; }
+.workflow-settings small { display: block; margin-top: 3px; color: var(--text-muted); font-size: 12px; font-weight: 400; line-height: 1.45; }
+.workflow-settings input:disabled + span { opacity: 0.6; }
+
+.speaker-panel { margin-top: 16px; padding: 16px; background: #07191d; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.speaker-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.speaker-heading > span:first-child { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; }
+.speaker-state { padding: 4px 10px; color: var(--text-muted); font-size: 11px; font-weight: 700; background: var(--surface-soft); border: 1px solid var(--border); border-radius: 999px; }
+.speaker-state.is-enrolled { color: var(--success); border-color: var(--success); background: var(--success-soft); }
+.speaker-verdict { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin: 12px 0 0; }
+.speaker-verdict strong { font-size: 13px; }
+.speaker-verdict small { color: var(--text-muted); font-family: "Fira Code", ui-monospace, monospace; font-size: 11px; }
+.speaker-verdict[data-decision="clinician"] strong { color: var(--success); }
+.speaker-verdict[data-decision="other"] strong { color: var(--danger); }
+.speaker-verdict[data-decision="unknown"] strong { color: var(--warning); }
+.speaker-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+.finding-list { display: grid; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+.finding-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; background: #07191d; border: 1px solid var(--border); border-radius: 10px; }
+.finding-list span { color: var(--text-muted); font-size: 12px; }
+.finding-list strong { font-size: 12px; font-weight: 700; }
+.finding-list li.is-positive strong { color: var(--danger); }
+.finding-list li.is-negative strong { color: var(--success); }
+.finding-list li.is-graded strong { color: var(--warning); }
+
+.recession-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding: 12px 16px; background: #07191d; border: 1px solid var(--border); border-radius: var(--radius-md); }
+.recession-row > span { font-weight: 700; font-size: 13px; }
+.recession-row > div { display: flex; gap: 14px; font-family: "Fira Code", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.recession-row > div span { display: inline-flex; flex-direction: column; align-items: center; }
+.recession-row small { color: var(--text-muted); font-size: 10px; letter-spacing: 0.06em; }
+
+.counter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 8px; margin: 16px 0 0; }
+.counter-grid > div { padding: 10px 12px; background: #07191d; border: 1px solid var(--border); border-radius: 10px; }
+.counter-grid dt { color: var(--text-muted); font-size: 10px; letter-spacing: 0.05em; text-transform: uppercase; }
+.counter-grid dd { margin: 6px 0 0; font-family: "Fira Code", ui-monospace, monospace; font-size: 17px; font-variant-numeric: tabular-nums; }
+.cadence-note { margin-top: 12px; }
+.runtime-note { margin-top: 4px; font-family: "Fira Code", ui-monospace, monospace; font-size: 10px; opacity: 0.75; }
+
+.trace { margin-top: 8px; }
+.trace summary { color: var(--primary); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; }
+.trace ol { display: grid; gap: 4px; margin: 8px 0 0; padding: 0; list-style: none; }
+.trace li { display: grid; grid-template-columns: 96px 60px 1fr; gap: 8px; align-items: baseline; padding: 5px 8px; background: var(--surface-soft); border-radius: 7px; font-size: 11px; }
+.trace li span { color: var(--text); font-size: 11px; font-weight: 700; letter-spacing: 0; text-transform: none; }
+.trace li em { color: var(--text-muted); font-size: 10px; font-style: normal; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+.trace li[data-outcome="block"] em, .trace li[data-outcome="reject"] em { color: var(--danger); }
+.trace li[data-outcome="confirm"] em { color: var(--warning); }
+.trace li[data-outcome="adjust"] em { color: var(--primary); }
+.trace li[data-outcome="pass"] em { color: var(--success); }
+.trace li small { color: var(--text-muted); font-size: 11px; line-height: 1.4; word-break: break-word; }
+
+@media (max-width: 720px) {
+  .trace li { grid-template-columns: 1fr; gap: 2px; }
+  .confirmation-actions { width: 100%; }
+  .confirmation-actions .button { flex: 1; }
+}

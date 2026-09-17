@@ -143,6 +143,22 @@ export interface SpeakerVerdict {
 
 export type UtteranceSource = 'asr' | 'simulator' | 'evaluation';
 
+/**
+ * Stage-by-stage approvals carried by a replayed utterance.
+ *
+ * When a stage holds an utterance it keeps the original input; approving the
+ * confirmation replays that exact input with the approval attached, so the
+ * operator's decision is recorded as a normal pipeline pass rather than a
+ * side-channel write into the chart.
+ */
+export interface PipelineOverrides {
+  speaker?: boolean;
+  relevance?: boolean;
+  polarity?: boolean;
+  overwrite?: boolean;
+  correction?: boolean;
+}
+
 /** Everything the intelligence layer is allowed to see about one final result. */
 export interface UtteranceInput {
   transcript: string;
@@ -155,6 +171,7 @@ export interface UtteranceInput {
   /** Context version observed when this utterance started, for stale rejection. */
   observedVersion: number | null;
   speaker: SpeakerVerdict | null;
+  overrides?: PipelineOverrides;
 }
 
 /* ------------------------------------------------------------------ */

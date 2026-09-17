@@ -1,17 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { TranscriptTiming } from '../domain/types';
+import type { SpeakerVerdict } from '../domain/types';
 import {
   ASR_PROTOCOL_VERSION,
   TARGET_SAMPLE_RATE,
   asrWebSocketUrl,
   parseServerMessage,
+  readCadence,
+  readSpeaker,
+  readWords,
+  type AsrFinal,
   type AsrModelInfo,
   type AsrServerMessage,
   type AsrStatus,
+  type CadenceInfo,
+  type EnrollmentState,
+  type RuntimeInfo,
 } from './protocol';
 
 interface UseLocalAsrOptions {
-  onFinal: (transcript: string, timing: TranscriptTiming) => void;
+  onFinal: (final: AsrFinal) => void;
+  /**
+   * Read at speech start, not at commit. A final that was overtaken by a change
+   * of location has to be recognizable as stale by the time it arrives.
+   */
+  contextVersion?: () => number;
 }
 
 export interface LocalAsrController {
@@ -21,12 +33,22 @@ export interface LocalAsrController {
   interimTranscript: string;
   error: string | null;
   model: AsrModelInfo | null;
+  runtime: RuntimeInfo | null;
   audioLevel: number;
   latestDecodeMs: number | null;
+  speaker: SpeakerVerdict | null;
+  cadence: CadenceInfo | null;
+  enrollment: EnrollmentState | null;
+  enrolling: boolean;
   start: () => Promise<void>;
   stop: () => void;
   retry: () => void;
+  enroll: (seconds?: number) => Promise<void>;
+  revokeEnrollment: () => Promise<void>;
 }
+
+/** Seconds of speech requested when enrolling a clinician's voice. */
+export const ENROLLMENT_SECONDS = 6;
 
 interface CaptureResources {
   stream: MediaStream;
@@ -55,7 +77,7 @@ export function supportsLocalAudioCapture(): boolean {
   );
 }
 
-export function useLocalAsr({ onFinal }: UseLocalAsrOptions): LocalAsrController {
+export function useLocalAsr({ onFinal, contextVersion }: UseLocalAsrOptions): LocalAsrController {
   const supported = useMemo(supportsLocalAudioCapture, []);
   const [status, setStatus] = useState<AsrStatus>(supported ? 'connecting' : 'unsupported');
   const [interimTranscript, setInterimTranscript] = useState('');
@@ -64,10 +86,17 @@ export function useLocalAsr({ onFinal }: UseLocalAsrOptions): LocalAsrController
   const [captureActive, setCaptureActive] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
   const [latestDecodeMs, setLatestDecodeMs] = useState<number | null>(null);
+  const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
+  const [speaker, setSpeaker] = useState<SpeakerVerdict | null>(null);
+  const [cadence, setCadence] = useState<CadenceInfo | null>(null);
+  const [enrollment, setEnrollment] = useState<EnrollmentState | null>(null);
+  const [enrolling, setEnrolling] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const captureRef = useRef<CaptureResources | null>(null);
   const desiredListeningRef = useRef(false);
   const speechStartedAtRef = useRef<number | null>(null);
+  const observedVersionRef = useRef<number | null>(null);
+  const contextVersionRef = useRef(contextVersion);
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptRef = useRef(0);
   const connectRef = useRef<() => void>(() => undefined);
@@ -76,7 +105,8 @@ export function useLocalAsr({ onFinal }: UseLocalAsrOptions): LocalAsrController
 
   useEffect(() => {
     onFinalRef.current = onFinal;
-  }, [onFinal]);
+    contextVersionRef.current = contextVersion;
+  }, [contextVersion, onFinal]);
 
   const releaseCapture = useCallback((updateState = true) => {
     const capture = captureRef.current;
@@ -126,6 +156,7 @@ export function useLocalAsr({ onFinal }: UseLocalAsrOptions): LocalAsrController
         break;
       case 'speech_start':
         speechStartedAtRef.current ??= performance.now() - 100;
+        observedVersionRef.current = contextVersionRef.current?.() ?? null;
         setStatus('processing');
         break;
       case 'partial':
@@ -136,13 +167,26 @@ export function useLocalAsr({ onFinal }: UseLocalAsrOptions): LocalAsrController
       case 'final': {
         const transcript = message.text?.trim() ?? '';
         const observedAt = performance.now();
+        const verdict = readSpeaker(message);
+        setSpeaker(verdict);
+        setCadence(readCadence(message));
         if (transcript) {
-          onFinalRef.current(transcript, {
-            startedAt: speechStartedAtRef.current ?? observedAt,
-            observedAt,
+          onFinalRef.current({
+            transcript,
+            timing: {
+              startedAt: speechStartedAtRef.current ?? observedAt,
+              observedAt,
+            },
+            words: readWords(message),
+            utteranceId: message.utteranceId ?? null,
+            audioMs: message.audioMs ?? null,
+            decodeMs: message.decodeMs ?? null,
+            speaker: verdict,
+            observedVersion: observedVersionRef.current,
           });
         }
         speechStartedAtRef.current = null;
+        observedVersionRef.current = null;
         setInterimTranscript('');
         setLatestDecodeMs(message.decodeMs ?? null);
         setStatus(desiredListeningRef.current ? 'listening' : 'ready');
@@ -303,6 +347,112 @@ export function useLocalAsr({ onFinal }: UseLocalAsrOptions): LocalAsrController
     connect();
   }, [connect, supported]);
 
+  const refreshRuntime = useCallback(async () => {
+    try {
+      const response = await fetch('/api/health');
+      if (!response.ok) return;
+      const health = (await response.json()) as { runtime?: RuntimeInfo };
+      if (mountedRef.current && health.runtime) setRuntime(health.runtime);
+    } catch {
+      // The socket already reports service availability; this is supplementary.
+    }
+  }, []);
+
+  const refreshEnrollment = useCallback(async () => {
+    try {
+      const response = await fetch('/api/speaker');
+      if (!response.ok) return;
+      const state = (await response.json()) as EnrollmentState;
+      if (mountedRef.current) setEnrollment(state);
+    } catch {
+      // Attribution is optional; its absence must not break capture.
+    }
+  }, []);
+
+  /**
+   * Records a short sample from the microphone without involving the recognizer.
+   * Enrollment audio is posted straight to the local service and is never part
+   * of a recognition stream.
+   */
+  const captureSeconds = useCallback(async (seconds: number): Promise<Blob> => {
+    const Context = window.AudioContext ?? window.webkitAudioContext;
+    if (!Context) throw new Error('AudioContext is unavailable.');
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: false },
+    });
+    const context = new Context({ latencyHint: 'interactive' });
+    const chunks: ArrayBuffer[] = [];
+    try {
+      await context.audioWorklet.addModule('/audio/pcm-capture-worklet.js');
+      const source = context.createMediaStreamSource(stream);
+      const worklet = new AudioWorkletNode(context, 'pcm-capture-processor', {
+        processorOptions: { targetSampleRate: TARGET_SAMPLE_RATE, batchMs: 100 },
+      });
+      const mute = context.createGain();
+      mute.gain.value = 0;
+      worklet.port.onmessage = (event: MessageEvent<{ pcm: ArrayBuffer; level: number }>) => {
+        chunks.push(event.data.pcm);
+        setAudioLevel(Math.min(1, event.data.level * 4));
+      };
+      source.connect(worklet);
+      worklet.connect(mute);
+      mute.connect(context.destination);
+      await context.resume();
+      await new Promise((resolve) => window.setTimeout(resolve, seconds * 1_000));
+      worklet.port.onmessage = null;
+      source.disconnect();
+      worklet.disconnect();
+      mute.disconnect();
+    } finally {
+      for (const track of stream.getTracks()) track.stop();
+      void context.close();
+      setAudioLevel(0);
+    }
+    return new Blob(chunks, { type: 'application/octet-stream' });
+  }, []);
+
+  const enroll = useCallback(async (seconds = ENROLLMENT_SECONDS) => {
+    if (!supported) {
+      setError('Speaker enrollment needs microphone access, which is unavailable here.');
+      return;
+    }
+    setEnrolling(true);
+    setError(null);
+    try {
+      const sample = await captureSeconds(seconds);
+      const response = await fetch('/api/speaker/enroll', { method: 'POST', body: sample });
+      const state = (await response.json()) as EnrollmentState & { error?: string };
+      if (!response.ok) {
+        setError(state.error ?? 'Enrollment failed. Try again and keep speaking throughout.');
+      }
+      if (mountedRef.current) setEnrollment({ ...state });
+    } catch (reason) {
+      const detail = reason instanceof Error ? reason.message : 'microphone or service failure';
+      setError(`Speaker enrollment could not complete: ${detail}`);
+    } finally {
+      if (mountedRef.current) setEnrolling(false);
+    }
+  }, [captureSeconds, supported]);
+
+  const revokeEnrollment = useCallback(async () => {
+    try {
+      const response = await fetch('/api/speaker/reset', { method: 'POST' });
+      const state = (await response.json()) as EnrollmentState;
+      if (mountedRef.current) {
+        setEnrollment(state);
+        setSpeaker(null);
+      }
+    } catch {
+      setError('The enrolled voice profile could not be revoked. Is the service running?');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (status !== 'ready' && status !== 'listening') return;
+    void refreshRuntime();
+    void refreshEnrollment();
+  }, [refreshEnrollment, refreshRuntime, status]);
+
   useEffect(() => {
     mountedRef.current = true;
     connect();
@@ -327,10 +477,17 @@ export function useLocalAsr({ onFinal }: UseLocalAsrOptions): LocalAsrController
     interimTranscript,
     error,
     model,
+    runtime,
     audioLevel,
     latestDecodeMs,
+    speaker,
+    cadence,
+    enrollment,
+    enrolling,
     start,
     stop,
     retry,
+    enroll,
+    revokeEnrollment,
   };
 }

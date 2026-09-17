@@ -116,7 +116,8 @@ describe('local ASR browser adapter', () => {
   it('captures PCM, exposes partials, commits finals, and releases every resource', async () => {
     installAudioEnvironment();
     const onFinal = vi.fn();
-    const { result, unmount } = renderHook(() => useLocalAsr({ onFinal }));
+    const { result, unmount } = renderHook(() =>
+      useLocalAsr({ onFinal, contextVersion: () => 7 }));
     const socket = MockWebSocket.instances[0];
     expect(socket.url).toBe('ws://localhost:3000/ws/asr');
     ready(socket);
@@ -137,6 +138,8 @@ describe('local ASR browser adapter', () => {
     expect(result.current.audioLevel).toBeCloseTo(0.4);
 
     act(() => {
+      // The context version is captured here, not at commit, so a final that a
+      // later jump overtook can still be recognized as stale.
       socket.message({ type: 'speech_start', utteranceId: 1 });
       socket.message({ type: 'partial', text: 'three four', decodeMs: 12 });
     });
@@ -144,11 +147,31 @@ describe('local ASR browser adapter', () => {
     expect(result.current.interimTranscript).toBe('three four');
     expect(onFinal).not.toHaveBeenCalled();
 
-    act(() => socket.message({ type: 'final', text: 'three four five', decodeMs: 18 }));
-    expect(onFinal).toHaveBeenCalledWith('three four five', expect.objectContaining({
-      startedAt: expect.any(Number),
-      observedAt: expect.any(Number),
+    act(() => socket.message({
+      type: 'final',
+      text: 'three four five',
+      decodeMs: 18,
+      audioMs: 720,
+      utteranceId: 1,
+      words: [{ word: 'three', startMs: 0, endMs: 240, probability: 0.97 }],
+      speaker: { decision: 'clinician', similarity: 0.98, enrolled: true, voicedMs: 700 },
+      cadence: { endSilenceMs: 430, wordsPerSecond: 3.2, pauseP90Ms: 90, samples: 1, adaptive: true },
     }));
+    expect(onFinal).toHaveBeenCalledWith(expect.objectContaining({
+      transcript: 'three four five',
+      timing: expect.objectContaining({
+        startedAt: expect.any(Number),
+        observedAt: expect.any(Number),
+      }),
+      words: [{ word: 'three', startMs: 0, endMs: 240, probability: 0.97 }],
+      utteranceId: 1,
+      audioMs: 720,
+      decodeMs: 18,
+      speaker: { decision: 'clinician', similarity: 0.98, overridden: false },
+      observedVersion: 7,
+    }));
+    expect(result.current.speaker?.decision).toBe('clinician');
+    expect(result.current.cadence).toMatchObject({ endSilenceMs: 430, adaptive: true });
     expect(result.current.interimTranscript).toBe('');
     expect(result.current.latestDecodeMs).toBe(18);
 
