@@ -1,0 +1,49 @@
+name: verify
+
+# The full acceptance ledger is GATES.md. This workflow runs every gate that
+# does not need the model artifact downloaded. The two that do — the non-mocked
+# model smoke test and the acoustic replay harness — stay local, because pulling
+# and caching a model in CI would make a slow job that proves less than running
+# it on the machine the latency budget is written for.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: npm ci
+      - run: npm run setup
+
+      - name: Quality suite
+        run: node scripts/verify-quality.mjs
+
+      - name: Clinical evaluation
+        run: node scripts/evaluate-clinical.mjs --gate
+
+      - name: Capability gates
+        run: |
+          for gate in lexicon relevance disambiguation negation corrections \
+                      sequence-guard workflow-state pipeline speaker cadence \
+                      telemetry intelligence-ui architecture documentation; do
+            echo "::group::$gate"
+            node "scripts/verify-$gate.mjs"
+            echo "::endgroup::"
+          done
