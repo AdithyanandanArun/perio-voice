@@ -2,9 +2,21 @@
 
 ## Purpose and constraints
 
-Perio Voice is a local-first, low-latency clinical voice pipeline. The first milestone accepts microphone audio, produces partial and final English transcripts, applies a deterministic periodontal grammar, and commits validated events to an in-memory chart. Speech recognition is deliberately isolated from clinical interpretation so either side can evolve without changing the other contract.
+Perio Voice is a local-first clinical voice intelligence layer. Microphone audio
+becomes partial and final English transcripts on the machine it was captured on,
+and those transcripts pass through a deterministic clinical pipeline that decides
+what belongs in a periodontal chart, what it means, and where it goes.
 
-The current release is a prototype, not a medical device. Its safety posture is conservative: partial hypotheses never mutate the chart, invalid or overflowing sequences are rejected atomically, and the simulator remains available if the voice service is unavailable.
+The product is not the recognizer. The recognizer is replaceable; the value is
+the layer between it and the record, which is why speech recognition and clinical
+interpretation are separated by a hard boundary and evaluated with different
+metrics.
+
+The current release is a prototype, not a medical device. Its safety posture is
+conservative throughout: partial hypotheses never mutate the chart, invalid or
+overflowing sequences are rejected as a unit, anything the pipeline is unsure of
+is held for a human decision rather than guessed, and the deterministic simulator
+remains available when the voice service is not.
 
 ## Runtime topology
 
@@ -14,33 +26,214 @@ Browser (React)
     → AudioWorklet (mono, resample, 16 kHz PCM16, 100 ms frames)
     → binary WebSocket /ws/asr
         → FastAPI connection/session boundary
-        → energy VAD + pre-roll + utterance endpointing
+        → energy VAD + pre-roll + cadence-adaptive endpointing
         → bounded latest-partial-wins decode queue
-        → Faster-Whisper tiny.en (CPU INT8 by default)
-    ← speech_start / partial / final / metrics / error
+        → preprocessing profile (none | highpass | spectral)
+        → Faster-Whisper tiny.en (CPU INT8), biased with the dental prompt
+        → speaker verification against the enrolled clinician
+    ← speech_start / partial / final (+ words, speaker, cadence) / error
   final transcript only
-    → deterministic clinical engine
+    → clinical intelligence pipeline (below)
     → immutable session reducer
-    → live chart + audit history + latency samples
+    → live chart + append-only journal + audit trail + latency samples
 
-Transcript simulator ───────────────────────────────┘
+Transcript simulator ──────────────────────────────────────┘
 
-GET /api/health ← model lifecycle and deployment metadata
+GET /api/health   ← model lifecycle, runtime contract, enrolment state
+GET /api/metrics  ← bounded counters and duration histograms
+POST /api/speaker/enroll, /api/speaker/reset ← local, revocable voice profile
 ```
 
 Component ownership:
 
-- `public/audio/pcm-capture-worklet.js` performs capture-thread resampling, PCM16 conversion, 100 ms batching, transferable-buffer delivery, and input-level measurement.
-- `src/speech/useLocalAsr.ts` owns microphone permission, WebSocket lifecycle, reconnects, model states, partial/final handling, and complete resource cleanup.
-- `server/audio.py` owns PCM validation, voice activity endpointing, pre-roll, partial cadence, and maximum utterance duration.
-- `server/session.py` owns per-stream backpressure and serialized recognition. Pending partials may be superseded; finals are never intentionally dropped.
-- `server/recognizer.py` is the inference adapter. It lazy-loads one Faster-Whisper model and keeps CPU decode work off the async event loop.
-- `src/domain/clinicalEngine.ts` is pure and ASR-independent. It owns relevance, context, parsing, correction semantics, range checks, and sequence integrity.
-- `src/domain/sessionReducer.ts` is the only UI chart-state transition boundary.
+- `public/audio/pcm-capture-worklet.js` — capture-thread resampling, PCM16
+  conversion, 100 ms batching, transferable delivery, input level.
+- `src/speech/useLocalAsr.ts` — microphone permission, socket lifecycle,
+  reconnects, model states, enrolment capture, and complete resource cleanup. It
+  reads the clinical context version at speech start, not at commit.
+- `server/audio.py` — PCM validation, energy endpointing, pre-roll, partial
+  cadence, maximum utterance duration.
+- `server/cadence.py` — adapts the endpoint threshold to the speaker's pacing.
+- `server/denoise.py` — named preprocessing profiles.
+- `server/speaker.py` — enrolment and verification of the clinician's voice.
+- `server/session.py` — per-stream backpressure and serialized recognition.
+  Pending partials may be superseded; finals are never intentionally dropped.
+- `server/recognizer.py` — the inference adapter. One lazily loaded model, CPU
+  decode kept off the event loop, biased with the shared dental prompt.
+- `server/telemetry.py` — bounded, identifier-free counters and histograms.
+- `src/domain/**` — the clinical pipeline. Pure, ASR-independent, and the only
+  place clinical meaning is decided.
+- `src/domain/sessionReducer.ts` — the single chart transition boundary.
+
+## The clinical intelligence pipeline
+
+One recognition result enters and a chart transition, a held confirmation or a
+recorded refusal comes out. Each stage is a separate, independently testable
+decision, and each appends to a trace the interface can display.
+
+```text
+speaker → staleness → lexicon → lattice → relevance → context resolution
+        → grammar → negation → correction → sequence guard → commit
+```
+
+The order carries the safety argument. Speech that is not the clinician's, or
+that was overtaken by a change of location, is stopped before it can influence
+anything downstream. Relevance runs on safe vocabulary only, so the risky lexicon
+variants can never be what makes casual speech look clinical.
+
+### 1. Speaker attribution — `server/speaker.py`, `src/domain/pipeline.ts`
+
+The enrolled clinician is described by two views of their voice: the long-term
+average log-mel spectrum, and the mean and spread of the cepstral coefficients.
+An utterance is accepted only when both agree, which is what creates the margin.
+Measured on the checked-in fixture, held-out speech from the enrolled speaker
+scores 0.9895 while a deliberately hard negative — the same recording resampled
+so pitch and formants move together, keeping the speaking style — peaks at
+0.9388. The thresholds sit inside that gap, and `scripts/calibrate_speaker.py`
+re-measures it rather than asserting it.
+
+Anything between the thresholds reports `unknown` and is held for a human
+decision. Enrolment data stays in process memory, is never written to disk, and
+is revoked by a single request. Attribution is always visible and always
+overridable, because hidden attribution is worse than none: a clinician cannot
+correct a decision they cannot see.
+
+Known limits: a spectral profile is not a biometric identity claim. It separates
+clearly different voices and abstains otherwise, it degrades with heavy noise and
+very short utterances, and it does not handle overlapping speech. Pitch was
+evaluated as a third view and deliberately left out — median F0 varies by more
+than fifteen percent between five-second segments of one speaker, which is the
+same order as the difference it would need to detect. A production deployment
+wanting stronger attribution should add a trained speaker-embedding model behind
+the same interface and re-run the calibration script.
+
+### 2. Staleness — `src/domain/workflow.ts`
+
+Every location change bumps `context.version`; advancing through the three sites
+of one station does not, because that is charting working as intended. A final
+carries the version observed when the clinician started speaking, so a result
+overtaken by a jump is refused instead of landing in a location they had already
+left.
+
+### 3. Dental lexicon — `src/domain/lexicon.ts`
+
+A versioned map from what recognizers and speakers actually produce to canonical
+clinical tokens: abbreviations (`b o p`, `p d`, `m b`), multi-word terminology,
+and the substitutions a general model makes for rare vocabulary.
+
+Variants are split by risk. A `safe` variant is already clinical or is not
+plausible conversational English, so it always applies. A `contextual` variant is
+an ordinary English word that is a frequent substitution — *buckle*, *vacation*,
+*black* — and applies only after relevance has judged the utterance clinical.
+Without that split, the vocabulary that repairs clinical speech would also be
+what makes casual speech look clinical.
+
+The same vocabulary supplies the recognizer's biasing prompt through
+`shared/dental-prompt.json`, so the browser and the Python service bias
+identically and a vocabulary change cannot land on one side only.
+
+### 4. Candidate lattice — `src/domain/lattice.ts`
+
+Short clinical words carry almost no linguistic context, so a recognizer that
+heard the sound correctly still picks the wrong word. Each token becomes a small
+curated candidate set with a prior: the literal reading, any canonical term, and
+attested substitutions (`to`→2, `for`→4, `ate`→8, `forty`→14). The sets are
+hand-curated rather than a phonetic expansion, because an unbounded expansion
+would let context invent values that were never spoken.
+
+### 5. Relevance — `src/domain/relevance.ts`
+
+Weighted, explainable evidence for and against chartability: measurement-shaped
+phrasing, clinical vocabulary and a value count matching the open sites for;
+patient-directed speech, requests, interrogatives, hedging, politeness, practice
+logistics, out-of-vocabulary words and low recognizer confidence against.
+
+Three outcomes: `chartable`, `non_chartable`, and `uncertain`, which is displayed
+and held rather than committed. The asymmetry is deliberate — a false chart entry
+costs far more than an utterance the clinician repeats. `relevanceMode: 'shadow'`
+scores without blocking, which is how a classifier change is evaluated before it
+can affect a chart.
+
+### 6. Context resolution — `src/domain/contextResolver.ts`
+
+Decides which candidate reading the active clinical state permits. The safety
+property is structural rather than statistical: a substituted reading is
+admissible only inside a value window the context already opened, so context can
+repair a misheard word but cannot manufacture a measurement. A number directly
+after a binding term sees only that binding's window, which is why "mobility ten"
+stays words while "tin" alone reads as a depth. A literal out-of-range number is
+left intact so range validation still rejects it as a unit.
+
+Budget: under 20 ms, measured in `tests/disambiguation.test.ts`.
+
+### 7. Grammar — `src/domain/grammar.ts`
+
+Typed intents: workflow commands, anatomical context, measurements, sequence
+replacement, corrections and findings. One utterance can carry several, emitted
+in the order they must be applied. The grammar declines anything it does not
+recognize, so an unparsed sentence becomes visible rather than a guess.
+
+### 8. Negation — `src/domain/negation.ts`
+
+A cue opens a negative scope that travels forward over the findings it governs,
+rides a conjunction, reaches across a modifier the recognizer kept, and closes at
+a measurement or a clause break. Every assertion records its cue, span and
+confidence. Constructions where English itself is ambiguous — `and` after a cue,
+a trailing cue, a doubled cue — resolve to a definite polarity at reduced
+confidence and are confirmed rather than written, because polarity reverses
+clinical meaning.
+
+### 9. Corrections and the journal — `src/domain/journal.ts`, `correction.ts`
+
+Every write is recorded with its previous value in an append-only journal.
+Corrections resolve against that journal rather than the transcript: they name an
+existing write, replace it in place, and supersede the old entry without deleting
+it. Undo and redo append compensating entries. A correction reaching past the
+active station is real but rewrites a location the clinician has left, so it is
+confirmed rather than applied.
+
+### 10. Sequence guard — `src/domain/sequenceGuard.ts`
+
+Grouped measurements are positional, so one inserted or dropped value does not
+produce one wrong measurement — it produces every following measurement at the
+wrong site. The guard validates a candidate group against the sites that are
+actually open and accepts or rejects it whole. There is no partial write, because
+a partial write is the state a sequence drifts from. A property test over random
+spoken groups asserts that the charted station always equals the concatenation of
+the accepted groups.
+
+### 11. Workflow position — `src/domain/workflow.ts`
+
+The mouth is 64 ordered stations on the conventional serpentine path. The
+clinician advances, steps back, marks a tooth absent, jumps away and resumes
+exactly where charting stopped. Continuous charting advances lazily: a finished
+station is left behind only when the next measurement arrives, so a finding or a
+correction spoken immediately after the last depth still belongs to the tooth
+just charted.
+
+### 12. Cadence-adaptive endpointing — `server/cadence.py`
+
+Endpointing follows the speaker rather than the reverse. The controller reads the
+pauses the recognizer already timestamps, tracks their high percentile rather
+than the mean, and moves the threshold inside a safe band. A one-word utterance
+carries no pause evidence, so it leaves the threshold alone instead of collapsing
+it toward the floor. Clipping a value mid-word costs far more than waiting another
+hundred milliseconds.
+
+### 13. Noise robustness — `server/denoise.py`, `evaluation/noise.py`
+
+Preprocessing is a named profile, not a fixed step, and the default is `none`.
+`scripts/evaluate_acoustic.py` mixes the speech fixture with six synthesized
+operatory sources at fixed speech-to-noise ratios and measures word error rate
+per profile. A profile is promoted only on that evidence, and the gate refuses to
+trade the common case for the rare one. See [EVALUATION.md](./EVALUATION.md) for
+the current numbers and what they do and do not establish.
 
 ## WebSocket protocol v1
 
-The server begins every connection with `hello`, including protocol version and required audio format, followed by `model_status` or `model_ready`. The browser sends UTF-8 JSON control messages and binary audio frames.
+The server begins every connection with `hello`, including protocol version and
+required audio format, followed by `model_status` or `model_ready`. The browser
+sends UTF-8 JSON control messages and binary audio frames.
 
 Client controls:
 
@@ -51,20 +244,28 @@ Client controls:
 {"type":"retry_model"}
 ```
 
-Binary payloads are little-endian signed PCM16, mono, 16,000 Hz. Frames are normally 3,200 bytes (100 ms), but the server validates framing rather than assuming one packet size.
+Binary payloads are little-endian signed PCM16, mono, 16,000 Hz. Frames are
+normally 3,200 bytes (100 ms), but the server validates framing rather than
+assuming one packet size.
 
 Server events:
 
-- `hello`: protocol and audio contract.
-- `model_status` / `model_ready`: lifecycle, model name, device, compute type, sample rate, and safe error text.
-- `listening`: the session can accept binary frames.
-- `speech_start`: utterance id and server monotonic start time.
-- `partial`: replaceable hypothesis plus audio/decode duration and dropped-partial count.
-- `final`: commit-eligible transcript, word timestamps, audio/decode duration, and utterance id.
-- `stopped`: stream drain is complete.
-- `error`: stable code, readable message, and `recoverable` flag.
+- `hello` — protocol and audio contract.
+- `model_status` / `model_ready` — lifecycle, model name, device, compute type,
+  sample rate, safe error text.
+- `listening` — the session can accept binary frames.
+- `speech_start` — utterance id and server monotonic start time.
+- `partial` — replaceable hypothesis, audio/decode duration, dropped-partial
+  count.
+- `final` — commit-eligible transcript, word timestamps, audio/decode duration,
+  utterance id, speaker verdict (when a clinician is enrolled) and the cadence
+  state that resulted.
+- `stopped` — stream drain complete.
+- `error` — stable code, readable message, `recoverable` flag.
 
-Protocol additions must be backward compatible within version 1. Breaking audio or event semantics require version 2 and an explicit browser compatibility check.
+`speaker` and `cadence` are additive fields on `final`; a client that ignores
+them still works, which is why this stays version 1. Breaking audio or event
+semantics require version 2 and an explicit browser compatibility check.
 
 ## State and commit rules
 
@@ -76,62 +277,108 @@ unsupported | offline → connecting → loading-model → ready
                                       any → error → retry → connecting
 ```
 
-Only a non-empty `final` event crosses into the clinical engine. A partial exists only for immediate feedback. The clinical engine emits a typed event, and the reducer either commits the complete event or rejects it without a partial chart update. Every accepted or rejected final creates an audit entry. This boundary prevents unstable ASR hypotheses from duplicating values.
+Only a non-empty `final` crosses into the clinical pipeline. A partial exists
+only for immediate feedback. The pipeline emits a typed event, and the reducer
+either commits the complete event or records why it did not. Every accepted,
+held, refused or ignored final creates an audit entry with its stage trace. This
+boundary is what prevents unstable hypotheses from duplicating values.
 
 ## Latency budget
 
-The target is responsive charting on the reference CPU, measured from speech onset to structured chart paint:
+Measured from speech onset to structured chart paint on the reference CPU:
 
 | Stage | Target | Enforcement/measurement |
 | --- | ---: | --- |
 | Capture batch | 100 ms | AudioWorklet `batchMs` |
-| Browser + loopback transport | p95 < 30 ms | client send and server receipt telemetry (next instrumentation leaf) |
+| Browser + loopback transport | p95 < 30 ms | client send and server receipt telemetry |
 | Partial cadence | 700 ms | `ASR_PARTIAL_INTERVAL_MS` |
-| End-of-speech silence | 520 ms | `ASR_END_SILENCE_MS` |
-| Tiny.en CPU INT8 final decode | p95 < 700 ms after endpoint | `decodeMs` in every result; hardware dependent |
-| Parser + reducer | p95 < 10 ms | browser performance measure |
+| End-of-speech silence | 300–1100 ms, adaptive | `server/cadence.py`, reported on every final |
+| Tiny.en CPU INT8 final decode | p95 < 700 ms after endpoint | `decodeMs`; hardware dependent |
+| Clinical pipeline | p95 < 10 ms | `parserSamples`; gated in `tests/pipeline.test.ts` and the clinical harness |
 | Speech onset → chart commit | median < 1.2 s, p95 < 2.0 s | session latency panel and evaluation harness |
 
-Endpoint silence dominates perceived delay, so it must be tuned against clipped final words. Use `tiny.en` for the CPU demo. Promote `base.en` or `small.en` only after accuracy gains are measured against the resulting tail latency. Avoid larger beams on the interactive path; the default is greedy/beam 1 with a single serialized model worker.
+Endpoint silence dominates perceived delay, which is why it adapts. Use `tiny.en`
+for the CPU demo; promote `base.en` or `small.en` only after accuracy gains are
+measured against the resulting tail latency. Avoid larger beams on the
+interactive path; the default is greedy with a single serialized model worker.
 
 ## Backpressure and concurrency
 
-Each WebSocket has a bounded decode queue. A newly eligible partial replaces a pending partial because older hypotheses have no downstream value. A final removes pending partials and waits for queue capacity; it is not discarded. The model adapter also has a decode lock because concurrent CPU inference increases tail latency and memory contention on the reference machine.
+Each WebSocket has a bounded decode queue. A newly eligible partial replaces a
+pending partial, because an older hypothesis has no downstream value. A final
+removes pending partials and waits for queue capacity; it is not discarded. The
+model adapter holds a decode lock, because concurrent CPU inference increases
+tail latency and memory contention on the reference machine.
 
-For more than one simultaneous operatory, replace the in-process lock with a model-worker pool and admission controller:
+For more than one simultaneous operatory, replace the in-process lock with a
+model-worker pool and an admission controller:
 
 ```text
 connection sessions → priority queue (final > newest partial) → N model workers
 ```
 
-Capacity is accepted only if final p95 stays inside the service-level objective. Otherwise return `busy` before capture begins. Do not silently build an unbounded queue. Audio buffers are per-utterance and capped by `ASR_MAX_UTTERANCE_MS`.
+Capacity is accepted only if final p95 stays inside the service-level objective;
+otherwise return `busy` before capture begins. Do not silently build an unbounded
+queue. Audio buffers are per-utterance and capped by `ASR_MAX_UTTERANCE_MS`.
 
 ## Observability
 
-No raw audio or transcript is logged by default. Operational events use a random session id and utterance id, never patient identity. The next telemetry adapter should emit:
+No raw audio or transcript is logged. `GET /api/metrics` returns counters and
+duration histograms whose names come from a fixed allowlist in
+`server/telemetry.py`, so label cardinality is bounded by construction rather
+than by convention — an unknown name raises instead of quietly creating a series.
+Histogram memory is bounded by a fixed reservoir.
 
-- model load duration and state transitions;
-- captured audio duration, speech duration, endpoint reason, and VAD level summary;
-- queue wait, decode time, real-time factor, dropped partials, and final word confidence distribution;
-- final-to-parser outcome (`accepted`, `ignored`, `rejected`) and parser duration;
-- end-to-end median/p95/p99 latency and reconnect/error counters.
+Counters cover connections, streams, utterances, partials, dropped partials,
+finals, decode errors, invalid audio, model loads and failures, and the three
+speaker outcomes. Histograms cover partial and final decode time, queue wait,
+audio and speech duration, the adapted endpoint, and model load time.
 
-Metrics are bounded-label counters/histograms. Transcript or audio sampling requires an explicit consented evaluation mode, encryption, retention expiry, and access audit. A correlation id should travel in protocol events, but clinical content must not become a metric label.
+The browser keeps its own session counters — charted, filtered as conversation,
+held as uncertain, blocked by attribution, refused as stale — plus end-to-end and
+clinical-pipeline latency samples.
+
+Exporting to a metrics backend is not implemented. Transcript or audio sampling
+would require an explicit consented evaluation mode, encryption, retention expiry
+and access audit; clinical content must never become a metric label.
 
 ## Failure and recovery behavior
 
-- Model loading is visible and disables microphone start; the first download is never presented as a frozen UI. A failed load can be retried over the existing socket without restarting the browser.
-- WebSocket loss moves the UI to offline, retains the deterministic simulator, and reconnects with capped exponential delay.
-- A recoverable decode error does not close capture; a model or protocol error requires retry/restart.
-- Stopping drains the final utterance before `stopped`, then releases tracks, nodes, ports, and the audio context.
-- Invalid binary frames receive `invalid_audio`; audio before `start` receives `stream_not_started`.
-- The chart remains in browser memory if ASR fails. There is no automatic replay of buffered clinical audio after reconnect because replay can create stale context writes.
+- Model loading is visible and disables microphone start; the first download is
+  never presented as a frozen UI. A failed load can be retried over the existing
+  socket without restarting the browser.
+- WebSocket loss moves the interface to offline, retains the deterministic
+  simulator, and reconnects with capped exponential delay.
+- A recoverable decode error does not close capture; a model or protocol error
+  requires retry or restart.
+- Stopping drains the final utterance before `stopped`, then releases tracks,
+  nodes, ports and the audio context.
+- Invalid binary frames receive `invalid_audio`; audio before `start` receives
+  `stream_not_started`.
+- Enrolment failure reports why (usually too little speech) and leaves the
+  previous profile untouched.
+- The chart remains in browser memory if recognition fails. There is no automatic
+  replay of buffered clinical audio after reconnect, because replay can create
+  stale context writes.
 
 ## Privacy and clinical safety boundary
 
-Audio and inference stay on the local machine in the default profile. The model repository is contacted only to download model artifacts; the application does not send captured audio to it. Production packaging should pre-provision verified model artifacts to eliminate runtime network access.
+Audio, inference and voice profiles stay on the local machine in the default
+profile. The model repository is contacted only to download model artifacts; the
+application never sends captured audio to it. Production packaging should
+pre-provision verified model artifacts to eliminate runtime network access.
 
-This prototype has no authentication, encrypted patient store, EHR interface, regulated audit retention, or clinician sign-off. It must not be used for real patient records. A production commit requires explicit clinician confirmation for low-confidence or context-changing events, append-only audit storage, role-based access, encryption in transit/at rest, signed model versions, and a rollback plan. Recognition confidence alone must never override anatomical sequence validation.
+Browser WebSocket origins are allowlisted with `ASR_ALLOWED_ORIGINS`. Production
+must set the deployed trusted origin rather than accepting arbitrary websites
+that can reach a loopback service.
+
+This prototype has no authentication, encrypted patient store, EHR interface,
+regulated audit retention or clinician sign-off, and must not be used for real
+patient records. A production commit requires explicit clinician confirmation for
+low-confidence or context-changing events, append-only audit storage, role-based
+access, encryption in transit and at rest, signed model versions and a rollback
+plan. Recognition confidence alone must never override anatomical sequence
+validation.
 
 ## Deployment profiles
 
@@ -142,64 +389,53 @@ This prototype has no authentication, encrypted patient store, EHR interface, re
 | Workstation | `small.en`, CUDA FP16/INT8 | Only after GPU/driver compatibility and latency tests |
 | Packaged clinic | pinned local artifact, no runtime download | Required direction for privacy-controlled deployment |
 
-Configuration is through `ASR_MODEL`, `ASR_MODEL_DIR`, `ASR_DEVICE`, `ASR_COMPUTE_TYPE`, and the endpoint/VAD variables in `server/config.py`. Python is pinned to 3.12 for the native inference stack. The web app and API are same-origin through the Vite proxy in development; production should terminate TLS and proxy `/api` and `/ws` to the local service.
-
-Browser WebSocket origins are allowlisted with `ASR_ALLOWED_ORIGINS` (local Vite origins by default). Production must set the deployed trusted origin rather than accepting arbitrary websites that can reach a loopback service.
+Configuration is through the `ASR_*` environment variables in `server/config.py`.
+Python is pinned to 3.12 for the native inference stack. The web app and API are
+same-origin through the Vite proxy in development; production should terminate
+TLS and proxy `/api` and `/ws` to the local service.
 
 ## Evaluation strategy
 
-Keep three fixture tiers:
+Three fixture tiers, described in full in [EVALUATION.md](./EVALUATION.md):
 
-1. Pure deterministic tests for PCM decoding, endpointing, queue policy, protocol, parser, reducer, and lifecycle cleanup.
-2. A real-model smoke fixture with a known transcript to prove the native model loads and decodes without mocks.
-3. Versioned dental evaluation sets containing clean, accented, rapid, corrected, negated, multi-speaker, and operatory-noise audio with structured ground truth.
+1. Deterministic unit tests for PCM decoding, endpointing, queue policy,
+   protocol, every pipeline stage, the reducer and lifecycle cleanup.
+2. A real-model smoke fixture with a known transcript, proving the native model
+   loads and decodes without mocks, plus the acoustic replay harness.
+3. A versioned clinical corpus of charting episodes across eleven cohorts with
+   structured ground truth.
 
-Release reports should separate word error rate from clinical event exact match, site-alignment error, false chart-entry rate, correction success, context error, and latency percentiles. Clinical exact match and false entry rate are the primary product metrics.
-
-## Post-milestone build order
-
-All later capabilities plug in before the existing atomic reducer commit. Each leaf gets an interface, fixtures, metrics, and a shadow-mode rollout before it can change chart state.
-
-### 1. Irrelevant-speech filtering
-
-Add a `RelevanceClassifier.score(transcript, acoustic, context) -> decision` stage after final ASR and before parsing. Inputs include transcript tokens, utterance duration, ASR confidence, active workflow, and recent accepted events. Outputs are `chartable`, `non_chartable`, or `uncertain` with reasons. Start with rules plus a compact local classifier, run in shadow mode, and optimize false chart entries before recall. Uncertain speech is displayed but not committed.
-
-### 2. Sequence protection
-
-Extend parser output with candidate value spans and confidence. A `SequenceGuard` compares candidate count and alignment with expected sites, rejects insert/delete shifts atomically, and can request confirmation. Add property tests over missing, repeated, and extra values and measure per-site alignment error, not only transcript accuracy.
-
-### 3. Context-aware phonetic disambiguation
-
-Introduce a bounded candidate lattice from ASR alternatives/word scores. `ContextResolver.resolve(candidates, ClinicalContext)` re-ranks only valid tooth, surface, measurement, and command interpretations. It may map `to/too` to `2` while a depth is expected but cannot invent an out-of-range value. Measure ambiguity resolution accuracy and added p95 latency; target < 20 ms.
-
-### 4. Negation handling
-
-Create typed finding assertions with polarity, cue span, scope, and confidence. A deterministic scope parser handles short clinical patterns first; a local language model may only propose candidates behind the same validator. Fixtures cover pauses, double negation, corrections, and conversational negatives. Low-confidence polarity requires confirmation because it reverses clinical meaning.
-
-### 5. Natural corrections and repetitions
-
-Represent accepted events in an append-only utterance/event journal. `CorrectionResolver` targets an event id or bounded recent window and emits a compensating replacement, never an in-place invisible mutation. Add undo/redo semantics, explicit confirmation for ambiguous targets, and tests for self-correction, full-sequence replacement, repeated confirmation, and delayed correction.
-
-### 6. Background-noise robustness
-
-Build a reproducible augmentation and replay harness with suction, handpiece, scaler, chair, HVAC, and babble at recorded SNR bands. Evaluate browser constraints, microphone placement, WebRTC denoising, and optional local enhancement as swappable preprocessing profiles. Promote a profile only if it improves clinical exact match without violating p95 latency or clipping short numbers.
-
-### 7. Multiple-speaker handling
-
-Add timestamp-preserving speaker embeddings/diarization behind `SpeakerGate.accept(words, segments, enrolledClinician)`. Enrollment data stays local and revocable. Unknown or overlapping speakers cannot commit. Evaluate clinician false rejects, non-clinician false accepts, overlap, and speaker handoff; provide a visible manual override rather than hidden attribution.
-
-### 8. Speaking-speed and cadence robustness
-
-Make endpoint thresholds adaptive within safe limits using recent syllable/word cadence and partial stability. Preserve maximum utterance and queue caps. The replay matrix must cover isolated words, rapid grouped values, uneven pauses, and interruptions. Tune for clinical exact match and tail latency separately for cadence bands.
-
-### 9. Context and position recovery
-
-Move workflow state to an explicit state machine with versioned transitions and commands such as skip, back, resume, tooth, surface, and direction. Every ASR final carries the context version observed at speech start; stale finals are rejected instead of written into a newer location. Recovery tests replay interruptions, backward jumps, skipped teeth, and reconnects.
-
-### 10. Dental terminology and accent robustness
-
-Maintain a versioned dental lexicon and per-workflow phrase set, feed supported prompts/hotwords to the recognizer, and evaluate by speaker/accent without storing identity in routine telemetry. Fine-tuning or adapters require licensed, consented data and a signed model registry. Promotion is based on stratified clinical event accuracy with regression limits for every existing cohort.
+Release reports separate word error rate from clinical event exact match, site
+alignment error, false chart entry rate, correction success, context success and
+latency percentiles. Clinical exact match and false chart entry rate are the
+primary product metrics.
 
 ## Change discipline
 
-Protocol, model, VAD, parser, and clinical-context versions are recorded independently. Any change that can alter a chart event must ship with a before/after evaluation report, latency percentiles, failure examples, and rollback configuration. Fast recognition is useful only when the resulting structured event is attached to the correct clinical context.
+Protocol, model, lexicon, prompt, VAD, preprocessing and corpus versions are
+recorded independently. Any change that can alter a chart event must ship with a
+before/after evaluation report, latency percentiles, failure examples and
+rollback configuration. Fast recognition is useful only when the resulting
+structured event is attached to the correct clinical context.
+
+## What is not built
+
+Stated plainly, because the gaps matter more than the features:
+
+- **Recorded operatory audio.** The noise sources are synthesized approximations.
+  They support relative comparison between preprocessing profiles on identical
+  audio; they are not a claim about a specific clinic. A promotion decision for
+  real deployment needs recordings from it.
+- **A dental speech corpus.** The acoustic tier uses one public speech fixture.
+  The clinical tier evaluates the layer this project contributes, using
+  transcripts including recognizer errors, but it does not measure recognition of
+  dental speech by accent or speaker, which needs consented recordings.
+- **Trained speaker embeddings.** See stage 1 above.
+- **Overlapping speech.** Two people talking at once is detected only as a lower
+  similarity score, and resolves to `unknown`.
+- **A model-worker pool.** One operatory per process.
+- **Persistence, authentication, EHR integration, metric export.** None exist.
+- **Adapted or fine-tuned recognition for accents or practice vocabulary.** The
+  lexicon and the biasing prompt are the whole mechanism today. Fine-tuning would
+  require licensed, consented data and a signed model registry, and promotion
+  would need stratified clinical accuracy with regression limits per cohort.
