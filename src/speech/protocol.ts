@@ -1,4 +1,9 @@
-import type { AsrWord, SpeakerVerdict, TranscriptTiming } from '../domain/types';
+import type {
+  AsrWord,
+  RecognitionAlternative,
+  SpeakerVerdict,
+  TranscriptTiming,
+} from '../domain/types';
 
 export const ASR_PROTOCOL_VERSION = 1;
 export const TARGET_SAMPLE_RATE = 16_000;
@@ -50,6 +55,7 @@ export interface RuntimeInfo {
 
 /** Everything one finished utterance carries across the recognition boundary. */
 export interface AsrFinal {
+  alternatives: RecognitionAlternative[];
   transcript: string;
   timing: TranscriptTiming;
   words: AsrWord[];
@@ -95,6 +101,7 @@ export interface AsrServerMessage {
   noSpeechProb?: number;
   reason?: string;
   expect?: string;
+  alternatives?: { text?: string; confidence?: number }[];
   cadence?: Partial<CadenceInfo> | null;
   error?: string | null;
   message?: string;
@@ -144,6 +151,14 @@ export function readSpeaker(message: AsrServerMessage): SpeakerVerdict | null {
     similarity: typeof speaker.similarity === 'number' ? speaker.similarity : 0,
     overridden: false,
   };
+}
+
+export function readAlternatives(message: AsrServerMessage): RecognitionAlternative[] {
+  if (!Array.isArray(message.alternatives)) return [];
+  return message.alternatives
+    .filter((entry): entry is { text: string; confidence?: number } =>
+      typeof entry?.text === 'string' && entry.text.trim() !== '')
+    .map((entry) => ({ text: entry.text.trim(), confidence: entry.confidence ?? 0 }));
 }
 
 export function readCadence(message: AsrServerMessage): CadenceInfo | null {

@@ -203,3 +203,61 @@ describe('parser latency budget', () => {
     expect(p95 as number).toBeLessThan(10);
   });
 });
+
+describe('recognizer alternatives', () => {
+  it('re-reads an utterance through alternatives when the best reading means nothing', () => {
+    // The recognizer dropped the values and returned only the measurement word,
+    // which names a measurement without giving one and so parses to nothing. A
+    // lower-ranked reading kept them.
+    const session = processUtterance(
+      createInitialSession(),
+      input('depth', {
+        alternatives: [
+          { text: 'depth', confidence: 62 },
+          { text: 'depth three four five', confidence: 61 },
+        ],
+      }),
+    );
+    expect(currentRecord(session).probingDepths).toEqual([3, 4, 5]);
+    const grammar = session.history[0].trace.find((entry) => entry.stage === 'grammar');
+    expect(grammar?.detail).toContain('re-read as "depth three four five"');
+  });
+
+  it('never overrides a reading that already carried clinical meaning', () => {
+    const session = processUtterance(
+      createInitialSession(),
+      input('three four five', {
+        alternatives: [
+          { text: 'three four five', confidence: 80 },
+          { text: 'two two two', confidence: 79 },
+        ],
+      }),
+    );
+    expect(currentRecord(session).probingDepths).toEqual([3, 4, 5]);
+  });
+
+  it('leaves an utterance refused when no alternative carries meaning either', () => {
+    const session = processUtterance(
+      createInitialSession(),
+      input('depth', { alternatives: [{ text: 'probing depth', confidence: 30 }] }),
+    );
+    expect(currentRecord(session).probingDepths).toEqual([null, null, null]);
+    expect(session.history[0].kind).toBe('ignored');
+  });
+
+  it('does not let an alternative resurrect speech that relevance refused', () => {
+    // Conversation stops at relevance, before alternatives are ever consulted,
+    // so a plausible-sounding alternative cannot smuggle a value into the chart.
+    const session = processUtterance(
+      createInitialSession(),
+      input('can you pass me that', {
+        alternatives: [
+          { text: 'can you pass me that', confidence: 40 },
+          { text: 'three four five', confidence: 39 },
+        ],
+      }),
+    );
+    expect(currentRecord(session).probingDepths).toEqual([null, null, null]);
+    expect(session.counters.nonChartable).toBe(1);
+  });
+});

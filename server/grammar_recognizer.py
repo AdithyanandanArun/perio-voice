@@ -27,7 +27,7 @@ from typing import Any
 
 from server.audio import FloatAudio
 from server.config import Settings
-from server.recognizer import ModelStatus, RecognitionResult, WordTiming
+from server.recognizer import Alternative, ModelStatus, RecognitionResult, WordTiming
 from server.vocabulary import UNKNOWN_TOKEN, Expectation, grammar_for
 
 
@@ -129,8 +129,28 @@ class VoskGrammarRecognizer:
             json.dumps(list(grammar_for(self._expectation))),
         )
         recognizer.SetWords(True)
+        if not partial and self.settings.max_alternatives > 1:
+            recognizer.SetMaxAlternatives(self.settings.max_alternatives)
         recognizer.AcceptWaveform(_to_pcm_bytes(audio))
         payload = json.loads(recognizer.FinalResult())
+
+        # With alternatives enabled Vosk returns a ranked list instead of a
+        # single result, and only the best one carries word timings.
+        alternatives: tuple[Alternative, ...] = ()
+        if "alternatives" in payload:
+            ranked = [entry for entry in payload["alternatives"] if isinstance(entry, dict)]
+            alternatives = tuple(
+                Alternative(
+                    text=" ".join(
+                        token
+                        for token in str(entry.get("text", "")).split()
+                        if token != UNKNOWN_TOKEN
+                    ).strip(),
+                    confidence=round(float(entry.get("confidence", 0.0)), 4),
+                )
+                for entry in ranked
+            )
+            payload = ranked[0] if ranked else {"text": ""}
 
         spoken = [
             entry
@@ -156,4 +176,5 @@ class VoskGrammarRecognizer:
             words=() if partial else words,
             unknown_ratio=(unknown / len(tokens)) if tokens else 1.0,
             engine="grammar",
+            alternatives=alternatives,
         )

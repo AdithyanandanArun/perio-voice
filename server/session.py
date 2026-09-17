@@ -207,6 +207,11 @@ class AsrSession:
             "engine": result.engine,
             "unknownRatio": round(result.unknown_ratio, 4),
             "noSpeechProb": round(result.no_speech_prob, 4),
+            "alternatives": [
+                {"text": item.text, "confidence": item.confidence}
+                for item in result.alternatives
+                if item.text
+            ],
         }
         if rejected:
             message["reason"] = "no_speech"

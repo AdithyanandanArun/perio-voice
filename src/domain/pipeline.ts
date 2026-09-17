@@ -227,7 +227,32 @@ export function processUtterance(
   );
 
   /* -------- 8. grammar -------- */
-  const parse = parseIntents(resolution.tokens, session.context);
+  let parse = parseIntents(resolution.tokens, session.context);
+  let rereadFrom: string | null = null;
+
+  // The recognizer often cannot separate short clinical words on sound alone and
+  // returns several readings at the same confidence. When the best one carries no
+  // clinical meaning, the context can pick among the rest — which is the whole
+  // reason the alternatives are requested. A reading that already parsed is never
+  // overridden, so this can only recover an utterance, never redirect one.
+  if (parse.intents.length === 0 && (input.alternatives?.length ?? 0) > 0) {
+    for (const alternative of input.alternatives ?? []) {
+      if (alternative.text.trim() === '' || alternative.text === input.transcript) continue;
+      const retryTokens = canonicalize(alternative.text, { contextual: true }).tokens;
+      const retry = parseIntents(
+        resolveWithContext(buildLattice(retryTokens, { words: input.words }), session.context).tokens,
+        session.context,
+      );
+      if (retry.intents.length > 0) {
+        parse = retry;
+        rereadFrom = alternative.text;
+        break;
+      }
+    }
+  }
+  if (rereadFrom !== null) {
+    trace.add('grammar', 'adjust', `re-read as "${rereadFrom}" from recognizer alternatives`);
+  }
   trace.add(
     'grammar',
     parse.intents.length > 0 ? 'pass' : 'reject',

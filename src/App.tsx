@@ -66,6 +66,7 @@ function App() {
       decodeMs: final.decodeMs,
       observedVersion: final.observedVersion,
       speaker: final.speaker,
+      alternatives: final.alternatives,
     };
     dispatch({ type: 'utterance', input });
   }, []);

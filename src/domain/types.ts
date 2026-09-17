@@ -144,6 +144,20 @@ export interface SpeakerVerdict {
 export type UtteranceSource = 'asr' | 'simulator' | 'evaluation';
 
 /**
+ * A competing reading of the same audio.
+ *
+ * Short clinical words are often genuinely ambiguous to a recognizer — "two" and
+ * "tooth" differ by one weak fricative, and the acoustic model returns both at
+ * identical confidence. The clinical context knows which one is possible, so the
+ * pipeline re-reads an utterance through its alternatives rather than accepting
+ * an arbitrary tie-break.
+ */
+export interface RecognitionAlternative {
+  text: string;
+  confidence: number;
+}
+
+/**
  * Stage-by-stage approvals carried by a replayed utterance.
  *
  * When a stage holds an utterance it keeps the original input; approving the
@@ -171,6 +185,8 @@ export interface UtteranceInput {
   /** Context version observed when this utterance started, for stale rejection. */
   observedVersion: number | null;
   speaker: SpeakerVerdict | null;
+  /** Competing readings, best first. Consulted only when the best yields nothing. */
+  alternatives?: RecognitionAlternative[];
   overrides?: PipelineOverrides;
 }
 

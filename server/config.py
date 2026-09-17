@@ -58,6 +58,8 @@ class Settings:
     no_speech_threshold: float = 0.6
     """Shorter finals are not decoded at all; every model hallucinates on them."""
     min_final_ms: int = 250
+    """Competing readings returned per final, so clinical context can choose."""
+    max_alternatives: int = 4
     allowed_origins: tuple[str, ...] = (
         "http://127.0.0.1:5173",
         "http://localhost:5173",
@@ -92,6 +94,8 @@ class Settings:
             raise ValueError("ASR_NO_SPEECH_THRESHOLD must be between 0 and 1.")
         if self.min_final_ms < 0:
             raise ValueError("ASR_MIN_FINAL_MS cannot be negative.")
+        if self.max_alternatives < 1:
+            raise ValueError("ASR_MAX_ALTERNATIVES must be at least 1.")
 
     @property
     def endpoint_floor_ms(self) -> int:
@@ -136,6 +140,7 @@ class Settings:
             ),
             no_speech_threshold=_env_float("ASR_NO_SPEECH_THRESHOLD", 0.6),
             min_final_ms=_env_int("ASR_MIN_FINAL_MS", 250),
+            max_alternatives=_env_int("ASR_MAX_ALTERNATIVES", 4),
             allowed_origins=tuple(
                 origin.strip()
                 for origin in os.getenv(

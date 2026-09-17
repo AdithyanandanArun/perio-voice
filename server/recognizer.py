@@ -28,6 +28,14 @@ class WordTiming:
 
 
 @dataclass(frozen=True, slots=True)
+class Alternative:
+    """A competing reading of the same audio, best first."""
+
+    text: str
+    confidence: float
+
+
+@dataclass(frozen=True, slots=True)
 class RecognitionResult:
     text: str
     decode_ms: int
@@ -37,6 +45,11 @@ class RecognitionResult:
     """Whisper's own estimate that the audio is not speech at all."""
     no_speech_prob: float = 0.0
     engine: str = "whisper"
+    """Competing readings, so clinical context can choose rather than the
+    acoustics alone. Short clinical words are often genuinely ambiguous — "two"
+    and "tooth" differ by one weak fricative — and the context knows which one is
+    possible."""
+    alternatives: tuple[Alternative, ...] = ()
 
 
 class Recognizer(Protocol):
