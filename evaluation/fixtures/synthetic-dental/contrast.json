@@ -1,0 +1,22 @@
+{
+ "bleeding_alone": "bleeding",
+ "buccal_alone": "buccal",
+ "buccal_depths": "buccal three four five",
+ "calculus_alone": "calculus",
+ "depth_phrase": "probing depth three four five",
+ "labial_alone": "labial",
+ "lingual_depths": "lingual two three four",
+ "mobility_grade": "mobility two",
+ "next_phrase": "next tooth",
+ "plaque_alone": "plaque",
+ "skip_phrase": "skip this tooth",
+ "suppuration_alone": "suppuration",
+ "three_alone": "three",
+ "three_seq": "three four five",
+ "tooth_alone": "tooth",
+ "tooth_num": "tooth fifteen",
+ "tooth_two": "tooth two",
+ "two_alone": "two",
+ "two_seq": "two three four",
+ "two_two": "two two"
+}
