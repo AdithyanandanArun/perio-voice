@@ -1,0 +1,36 @@
+/** Shared, allocation-light text normalization for the clinical pipeline. */
+
+const DASHES = /[‐-―−]/g;
+const APOSTROPHES = /[‘’ʼ]/g;
+
+/**
+ * Lower-cases, folds punctuation to spaces and collapses whitespace while
+ * preserving the hyphen, which carries meaning in compound number words such as
+ * "twenty-eight".
+ */
+export function normalizeText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(DASHES, '-')
+    .replace(APOSTROPHES, "'")
+    .replace(/[^a-z0-9\s'-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function tokenize(value: string): string[] {
+  const normalized = normalizeText(value);
+  return normalized === '' ? [] : normalized.split(' ');
+}
+
+/** Removes a trailing possessive or plural "s" only for exact lexicon lookups. */
+export function singularize(token: string): string {
+  if (token.length > 3 && token.endsWith('s') && !token.endsWith('ss')) {
+    return token.slice(0, -1);
+  }
+  return token;
+}
+
+export function titleCase(value: string): string {
+  return value.length === 0 ? value : value[0].toUpperCase() + value.slice(1);
+}
