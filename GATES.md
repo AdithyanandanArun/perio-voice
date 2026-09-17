@@ -137,3 +137,50 @@ Scope: Milestone 1 delivered active local Faster-Whisper recognition and a deter
   CHECK: node scripts/verify-documentation.mjs
   EXPECT: DOCUMENTATION_GATE_PASSED
   EVIDENCE: automatic-evidence=v1; definition-sha256=19a0cd1137bb98a8f1f6a522a8be8b55a9d7550a36183eae4606ac7bb5a363c1; exit=0; EXPECT=matched; output-sha256=cea4823b4682d434666fcd9ce41cc5057e7b1713953dcb358201c4f4d7eafb3c; output-bytes=26; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
+
+## Milestone 3 — recognition that actually works
+
+- [ ] G26: the dental fixture manifest is well formed and every utterance has a cohort and expected outcome
+  CHECK: node scripts/verify-fixture-capture.mjs --manifest
+  EXPECT: FIXTURE_MANIFEST_GATE_PASSED
+  EVIDENCE: pending
+
+- [ ] G27: recorded dental audio can be scored through the real clinical pipeline
+  CHECK: node scripts/verify-dental-evaluation.mjs
+  EXPECT: DENTAL_EVALUATION_BRIDGE_PASSED
+  EVIDENCE: pending
+
+- [ ] G28: every word the clinical grammars can emit exists in the recognizer lexicon, so no clinical term is silently unrecognizable
+  CHECK: uv run python scripts/verify_grammar_lexicon.py
+  EXPECT: GRAMMAR_LEXICON_GATE_PASSED
+  EVIDENCE: pending
+
+- [ ] G29: grammar-constrained recognition beats the previous Whisper configuration on spoken dental phrases by the declared margin
+  CHECK: uv run python scripts/evaluate_recognizers.py --gate
+  EXPECT: RECOGNIZER_GATE_PASSED
+  EVIDENCE: pending
+
+- [ ] G30: the active clinical context selects the grammar, and speech outside it yields no clinical value instead of an invented one
+  CHECK: uv run python scripts/verify_grammar_routing.py
+  EXPECT: GRAMMAR_ROUTING_GATE_PASSED
+  EVIDENCE: pending
+
+- [ ] G31: speaker enrollment completes from one ordinary six-second take without raised voice
+  CHECK: uv run python scripts/verify_enrollment.py
+  EXPECT: ENROLLMENT_GATE_PASSED
+  EVIDENCE: pending
+
+- [ ] G32: a half-second clinical utterance produces a speaker decision instead of being held as unknown
+  CHECK: uv run python scripts/verify_short_verification.py
+  EXPECT: SHORT_VERIFICATION_GATE_PASSED
+  EVIDENCE: pending
+
+- [ ] G33: the speaker thresholds sit inside a margin re-measured across the enrollment and verification durations the product actually uses
+  CHECK: uv run python scripts/calibrate_speaker.py
+  EXPECT: SPEAKER_CALIBRATION_OK
+  EVIDENCE: pending
+
+- [ ] G34: setup, configuration, and evaluation documentation describes the recognizer routing and the measured accuracy
+  CHECK: node scripts/verify-documentation.mjs
+  EXPECT: DOCUMENTATION_GATE_PASSED
+  EVIDENCE: pending
