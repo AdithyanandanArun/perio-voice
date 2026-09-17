@@ -20,7 +20,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests/server"]
+testpaths = ["tests/server", "tests/evaluation"]
 asyncio_mode = "auto"
 
 [tool.ruff]
@@ -33,6 +33,6 @@ select = ["E", "F", "I", "B", "UP", "ASYNC", "RUF"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
-files = ["server", "scripts"]
+files = ["server", "scripts", "evaluation"]
 ignore_missing_imports = true
 warn_unused_ignores = false
