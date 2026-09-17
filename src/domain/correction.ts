@@ -87,7 +87,7 @@ export function entryForSite(
 }
 
 export function resolveCorrection(request: CorrectionRequest): CorrectionPlan {
-  const { journal, charts, context, measurement, target, value, now } = request;
+  const { journal, charts, context, measurement, target, now } = request;
   const record = recordAt(charts, context.tooth, context.surface);
 
   if (target.scope === 'site' && target.siteIndex !== null) {

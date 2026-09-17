@@ -46,7 +46,12 @@ const EXAMPLE_PHRASES = [
 
 const EVENT_LABELS: Record<ClinicalEventKind, string> = {
   depth_sequence: 'Depths recorded',
+  recession_sequence: 'Recession recorded',
   bleeding: 'Finding updated',
+  finding: 'Finding updated',
+  undo: 'Change reversed',
+  redo: 'Change reapplied',
+  confirmation: 'Awaiting confirmation',
   correction: 'Value corrected',
   sequence_replacement: 'Sequence replaced',
   context: 'Context changed',

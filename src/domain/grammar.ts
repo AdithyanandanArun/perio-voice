@@ -54,6 +54,8 @@ export interface ParseResult {
   measurement: MeasurementType;
   /** Tokens no intent claimed, which the pipeline reports as unparsed speech. */
   leftover: string[];
+  /** Recognized constructions that were incomplete, reported to the clinician. */
+  problems: string[];
 }
 
 const COMMAND_TERMS: Readonly<Record<string, WorkflowCommand>> = {
@@ -108,6 +110,7 @@ export function parseIntents(
   const negation = resolveAssertions(resolved);
   const consumed = new Set<number>(negation.consumed);
   const intents: Intent[] = [];
+  const problems: string[] = [];
 
   const available = (index: number): boolean => !consumed.has(index);
   const findTerm = (term: string): number =>
@@ -133,6 +136,7 @@ export function parseIntents(
       intents: [{ kind: 'command', command, tooth: binding.tooth }],
       measurement,
       leftover: leftoverTokens(resolved, consumed),
+      problems,
     };
   }
 
@@ -153,6 +157,7 @@ export function parseIntents(
       intents: [{ kind: 'replace_sequence', measurement, values }],
       measurement,
       leftover: leftoverTokens(resolved, consumed),
+      problems,
     };
   }
 
@@ -185,6 +190,9 @@ export function parseIntents(
     const binding = bindTooth(resolved, toothIndex, consumed);
     tooth = binding.tooth;
     for (const index of binding.used) consumed.add(index);
+    if (tooth === null) {
+      problems.push('A tooth command needs a tooth number from 1 to 32.');
+    }
   } else if (quadrantIndex !== -1) {
     const term = resolved[quadrantIndex].term as string;
     consumed.add(quadrantIndex);
@@ -223,7 +231,7 @@ export function parseIntents(
       if (negation.assertions.length > 0) {
         intents.push({ kind: 'findings', assertions: negation.assertions });
       }
-      return { intents, measurement, leftover: leftoverTokens(resolved, consumed) };
+      return { intents, measurement, leftover: leftoverTokens(resolved, consumed), problems };
     }
   }
 
@@ -245,7 +253,7 @@ export function parseIntents(
     intents.push({ kind: 'findings', assertions: negation.assertions });
   }
 
-  return { intents, measurement, leftover: leftoverTokens(resolved, consumed) };
+  return { intents, measurement, leftover: leftoverTokens(resolved, consumed), problems };
 }
 
 /**
