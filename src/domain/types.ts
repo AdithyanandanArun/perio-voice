@@ -249,7 +249,24 @@ export interface RelevanceCounters {
   staleContext: number;
 }
 
+export interface SessionSettings {
+  /**
+   * Move to the next station automatically when one completes. Off by default:
+   * continuous traversal is powerful during a full-mouth pass but surprising
+   * when the clinician is working a single site.
+   */
+  autoAdvance: boolean;
+  /**
+   * `shadow` records relevance decisions without letting them block a commit,
+   * which is how a classifier change is evaluated before it can affect a chart.
+   */
+  relevanceMode: 'enforce' | 'shadow';
+  /** Require a verified clinician voice before any utterance can commit. */
+  requireSpeaker: boolean;
+}
+
 export interface ClinicalSession {
+  settings: SessionSettings;
   context: ClinicalContext;
   workflow: WorkflowState;
   charts: Record<string, PerioRecord>;
