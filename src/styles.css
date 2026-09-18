@@ -242,6 +242,9 @@ a { color: inherit; }
 label > span, fieldset legend, .surface-control > span { display: block; margin-bottom: 7px; color: var(--text-secondary); font-size: 11px; font-weight: 750; }
 input, select, textarea { color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; }
 input { min-width: 0; flex: 1; padding: 9px 12px; }
+/* The rule above is for text boxes. Without this, every checkbox stretched across
+   its row and pushed its label to the far edge. */
+input[type="checkbox"], input[type="radio"] { flex: none; width: auto; padding: 0; }
 textarea { width: 100%; min-height: 72px; padding: 10px 12px; resize: vertical; line-height: 1.45; }
 select { width: 100%; padding: 9px 34px 9px 11px; }
 .helper-text { margin: 8px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
@@ -439,3 +442,16 @@ tbody td { text-transform: capitalize; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+
+/* Profile page: every card gets the same inner padding and spacing, and each
+   preference is one aligned row (control, then its label and explanation). */
+.profile-page { display: grid; gap: 18px; }
+.profile-page > .panel { padding: 22px; }
+.profile-page .speaker-panel { margin-top: 0; }
+.profile-page .workflow-settings { display: grid; gap: 10px; }
+.profile-page .workflow-settings legend { margin-bottom: 10px; color: var(--text-muted); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.profile-page .workflow-settings label,
+.profile-page .workflow-settings label:first-of-type { margin: 0; padding: 12px 14px; align-items: flex-start; gap: 12px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; }
+.profile-page .workflow-settings input { width: 16px; height: 16px; margin-top: 1px; }
+.profile-page .workflow-settings span { font-size: 13px; }
+.profile-page .helper-text { margin: 14px 0 0; }
