@@ -257,9 +257,7 @@ class AuthStore:
 
     def delete_voice_profile(self, account_id: str) -> None:
         with self._lock, self._database:
-            self._database.execute(
-                "DELETE FROM voice_profiles WHERE account_id = ?", (account_id,)
-            )
+            self._database.execute("DELETE FROM voice_profiles WHERE account_id = ?", (account_id,))
 
     def voice_enrolled(self, account_id: str, required_ms: int) -> bool:
         with self._lock:

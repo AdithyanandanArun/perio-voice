@@ -331,9 +331,7 @@ def create_app(
         account: Account | None = None
         if auth_required:
             assert resolved_auth_store is not None
-            account = resolved_auth_store.account_for_session(
-                websocket.cookies.get(SESSION_COOKIE)
-            )
+            account = resolved_auth_store.account_for_session(websocket.cookies.get(SESSION_COOKIE))
             if account is None:
                 await websocket.close(code=4401, reason="Authentication required.")
                 return
