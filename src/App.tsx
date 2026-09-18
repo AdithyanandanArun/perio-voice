@@ -1,5 +1,25 @@
-import { AudioLines, RotateCcw, ShieldCheck } from 'lucide-react';
-import { type FormEvent, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import {
+  Activity,
+  AudioLines,
+  ChartNoAxesCombined,
+  LogOut,
+  Menu,
+  RotateCcw,
+  ShieldCheck,
+  UserRound,
+  X,
+} from 'lucide-react';
+import {
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from 'react';
+import { AuthScreen } from './auth/AuthScreen';
+import { resumeAccount, signOut, type Account } from './auth/api';
 import { CapturePanel } from './components/CapturePanel';
 import { ChartTable } from './components/ChartTable';
 import { ConfirmationsPanel } from './components/ConfirmationsPanel';
@@ -8,13 +28,13 @@ import { HistoryPanel } from './components/HistoryPanel';
 import { MetricsPanel } from './components/MetricsPanel';
 import { StationPanel } from './components/StationPanel';
 import { WorkflowPanel } from './components/WorkflowPanel';
-import { createInitialSession, currentRecord } from './domain/clinicalEngine';
 import { nextOpenPosition, toothAt } from './domain/chart';
-import { sessionReducer } from './domain/sessionReducer';
+import { createInitialSession, currentRecord } from './domain/clinicalEngine';
 import type { WorkflowCommand } from './domain/grammar';
+import { sessionReducer } from './domain/sessionReducer';
 import type { SessionSettings, Surface, UtteranceInput } from './domain/types';
-import { useLocalAsr } from './speech/useLocalAsr';
 import type { AsrFinal, AsrStatus, ClinicalExpectation } from './speech/protocol';
+import { useLocalAsr } from './speech/useLocalAsr';
 
 const EXAMPLE_PHRASES = [
   'three four five',
@@ -28,21 +48,49 @@ const EXAMPLE_PHRASES = [
 ] as const;
 
 const STATUS_LABELS: Record<AsrStatus, string> = {
-  unsupported: 'Simulator available',
+  unsupported: 'Voice unavailable',
   offline: 'ASR offline',
   connecting: 'Connecting',
   'loading-model': 'Loading model',
-  ready: 'Voice model ready',
-  listening: 'Listening live',
+  ready: 'Voice ready',
+  listening: 'Listening',
   processing: 'Recognizing speech',
   error: 'Action needed',
 };
 
 const DEV_BUILD = (import.meta as ImportMeta & { env: { DEV: boolean } }).env.DEV;
 
-function App() {
+interface AppProps {
+  /** Test/bootstrap escape hatch. Omit in production so the server session is authoritative. */
+  initialAccount?: Account | null;
+  showDeveloperTools?: boolean;
+}
+
+function initials(name: string): string {
+  return name.split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
+}
+
+function LoadingScreen() {
+  return (
+    <main className="session-loading" aria-live="polite">
+      <span className="brand-mark" aria-hidden="true"><AudioLines size={24} /></span>
+      <p>Opening your clinical workspace…</p>
+    </main>
+  );
+}
+
+function ClinicalWorkspace({
+  account,
+  onLogout,
+  showDeveloperTools,
+}: {
+  account: Account;
+  onLogout: () => void;
+  showDeveloperTools: boolean;
+}) {
   const [session, dispatch] = useReducer(sessionReducer, undefined, () => createInitialSession());
   const [simulatedTranscript, setSimulatedTranscript] = useState('');
+  const [navigationOpen, setNavigationOpen] = useState(false);
   const simulatorStartedAt = useRef<number | null>(null);
   const acceptSpeechFinals = useRef(true);
   const contextVersionRef = useRef(session.context.version);
@@ -83,9 +131,6 @@ function App() {
 
   const record = currentRecord(session);
   const tooth = toothAt(session.teeth, session.context.tooth);
-
-  // Telling the service what the chart is waiting for is what lets it narrow the
-  // recognizer grammar: while sites are open it need only distinguish digits.
   const expectation: ClinicalExpectation =
     nextOpenPosition(record, session.context.measurement) < 3 ? 'depths' : 'clinical';
   const declareExpectation = speech.declareExpectation;
@@ -125,125 +170,177 @@ function App() {
   const changeContext = (patch: { tooth?: number; surface?: Surface }) => {
     dispatch({ type: 'context', patch, occurredAt: performance.now() });
   };
-
   const runCommand = (command: WorkflowCommand) => {
     dispatch({ type: 'workflow', command, occurredAt: performance.now() });
   };
-
   const changeSettings = (patch: Partial<SessionSettings>) => {
     dispatch({ type: 'settings', patch });
   };
-
   const resolveConfirmation = (id: number, approve: boolean) => {
     dispatch({ type: 'confirmation', id, approve, occurredAt: performance.now() });
   };
-
   const clearActiveRecord = () => {
     if (window.confirm(
       `Clear all values for tooth ${session.context.tooth}, ${session.context.surface}?`,
-    )) {
-      dispatch({ type: 'clear-current', occurredAt: performance.now() });
-    }
+    )) dispatch({ type: 'clear-current', occurredAt: performance.now() });
   };
-
   const resetSession = () => {
-    if (window.confirm('Reset the full chart, latency metrics, and event history?')) {
+    if (window.confirm('Reset the full chart, response metrics, and event history?')) {
       acceptSpeechFinals.current = false;
       speech.stop();
       dispatch({ type: 'reset-session' });
     }
   };
-
   const startSpeech = () => {
     acceptSpeechFinals.current = true;
     void speech.start();
   };
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <div className="brand" aria-label="Perio Voice clinical capture">
-          <span className="brand-mark" aria-hidden="true"><AudioLines size={24} /></span>
-          <span>
-            <strong>PERIO VOICE</strong>
-            <small>Structured clinical capture</small>
-          </span>
+    <div className="platform-shell">
+      <button
+        type="button"
+        className="mobile-nav-toggle"
+        aria-label={navigationOpen ? 'Close navigation' : 'Open navigation'}
+        aria-expanded={navigationOpen}
+        onClick={() => setNavigationOpen((open) => !open)}
+      >
+        {navigationOpen ? <X size={20} /> : <Menu size={20} />}
+      </button>
+
+      <aside className={`sidebar ${navigationOpen ? 'is-open' : ''}`} aria-label="Primary navigation">
+        <div className="brand sidebar-brand" aria-label="Perio Voice">
+          <span className="brand-mark" aria-hidden="true"><AudioLines size={22} /></span>
+          <span><strong>Perio Voice</strong><small>Clinical workspace</small></span>
         </div>
-        <div className="topbar-actions">
-          <span
-            className={`system-status ${speech.listening ? 'is-live' : ''}`}
-            data-status={speech.status}
-          >
-            <span className="status-dot" aria-hidden="true" />
-            {STATUS_LABELS[speech.status]}
-          </span>
-          <button className="button button-quiet" type="button" onClick={resetSession}>
-            <RotateCcw size={17} aria-hidden="true" />
-            Reset session
+        <nav>
+          <a className="is-active" href="#charting" onClick={() => setNavigationOpen(false)}>
+            <ChartNoAxesCombined size={18} aria-hidden="true" /> Charting
+          </a>
+          <a href="#voice-profile" onClick={() => setNavigationOpen(false)}>
+            <UserRound size={18} aria-hidden="true" /> Voice profile
+          </a>
+          <a href="#activity" onClick={() => setNavigationOpen(false)}>
+            <Activity size={18} aria-hidden="true" /> Session activity
+          </a>
+        </nav>
+        <div className="sidebar-account">
+          <span className="account-avatar" aria-hidden="true">{initials(account.name)}</span>
+          <span><strong>{account.name}</strong><small>{account.email}</small></span>
+          <button type="button" aria-label="Sign out" onClick={onLogout}>
+            <LogOut size={18} aria-hidden="true" />
           </button>
         </div>
-      </header>
+      </aside>
 
-      <main id="main-content" className="workspace">
-        <section className="workspace-heading" aria-labelledby="page-title">
+      <div className="platform-main">
+        <header className="topbar">
           <div>
-            <p className="eyebrow">Live periodontal workflow</p>
-            <h1 id="page-title">Voice to chart, with context intact.</h1>
-            <p>
-              Speak naturally. Conversation is filtered out, ambiguous words are resolved against
-              the active context, and values are committed only when they fit the sites that are
-              actually open.
-            </p>
+            <p className="topbar-kicker">Periodontal chart</p>
+            <strong>New clinical session</strong>
           </div>
-          <div className="trust-note">
-            <ShieldCheck size={20} aria-hidden="true" />
-            <span>
-              <strong>Prototype guardrail</strong>
-              Out-of-range and overflow values are rejected atomically; anything uncertain is held
-              for your decision.
+          <div className="topbar-actions">
+            <span
+              className={`system-status ${speech.listening ? 'is-live' : ''}`}
+              data-status={speech.status}
+            >
+              <span className="status-dot" aria-hidden="true" />
+              {STATUS_LABELS[speech.status]}
             </span>
+            <button className="button button-quiet" type="button" onClick={resetSession}>
+              <RotateCcw size={16} aria-hidden="true" /> Reset session
+            </button>
           </div>
-        </section>
+        </header>
 
-        {showFixtureRecorder && <FixtureRecorder />}
+        <main id="main-content" className="workspace">
+          <section className="workspace-heading" id="charting" aria-labelledby="page-title">
+            <div>
+              <p className="eyebrow">Live charting</p>
+              <h1 id="page-title">Periodontal examination</h1>
+              <p>Record measurements and findings while keeping the active tooth in view.</p>
+            </div>
+            <div className="trust-note">
+              <ShieldCheck size={19} aria-hidden="true" />
+              <span><strong>Clinical safeguards active</strong>Uncertain entries wait for review.</span>
+            </div>
+          </section>
 
-        <ConfirmationsPanel pending={session.pending} onResolve={resolveConfirmation} />
+          {showFixtureRecorder && <FixtureRecorder />}
+          <ConfirmationsPanel pending={session.pending} onResolve={resolveConfirmation} />
 
-        <div className="dashboard-grid">
-          <CapturePanel
-            speech={speech}
-            statusLabels={STATUS_LABELS}
-            examples={EXAMPLE_PHRASES}
-            simulatedTranscript={simulatedTranscript}
-            onSimulatedChange={changeSimulated}
-            onSubmit={submitTranscript}
-            onExample={runExample}
-            onStart={startSpeech}
-          />
-
-          <StationPanel
-            session={session}
-            record={record}
-            tooth={tooth}
-            onChangeContext={changeContext}
-            onClear={clearActiveRecord}
-          />
-
-          <MetricsPanel session={session} cadence={speech.cadence} />
-
-          <HistoryPanel events={session.history} />
-
-          <WorkflowPanel
-            session={session}
-            onCommand={runCommand}
-            onSettings={changeSettings}
-            speakerEnrolled={speech.enrollment?.enrolled === true}
-          />
-        </div>
-
-        <ChartTable rows={chartRows} teeth={session.teeth} />
-      </main>
+          <div className="dashboard-grid">
+            <CapturePanel
+              speech={speech}
+              statusLabels={STATUS_LABELS}
+              examples={EXAMPLE_PHRASES}
+              simulatedTranscript={simulatedTranscript}
+              onSimulatedChange={changeSimulated}
+              onSubmit={submitTranscript}
+              onExample={runExample}
+              onStart={startSpeech}
+              showDeveloperTools={showDeveloperTools}
+            />
+            <StationPanel
+              session={session}
+              record={record}
+              tooth={tooth}
+              onChangeContext={changeContext}
+              onClear={clearActiveRecord}
+            />
+            <div id="activity"><MetricsPanel session={session} cadence={speech.cadence} /></div>
+            <HistoryPanel events={session.history} />
+            <WorkflowPanel
+              session={session}
+              onCommand={runCommand}
+              onSettings={changeSettings}
+              speakerEnrolled={speech.enrollment?.enrolled === true}
+            />
+          </div>
+          <ChartTable rows={chartRows} teeth={session.teeth} />
+        </main>
+      </div>
     </div>
+  );
+}
+
+function App({ initialAccount, showDeveloperTools }: AppProps) {
+  const [account, setAccount] = useState<Account | null>(initialAccount ?? null);
+  const [loading, setLoading] = useState(initialAccount === undefined);
+
+  useEffect(() => {
+    if (initialAccount !== undefined) return;
+    let active = true;
+    void resumeAccount()
+      .then((resumed) => {
+        if (active) setAccount(resumed);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => { active = false; };
+  }, [initialAccount]);
+
+  const logout = async () => {
+    await signOut();
+    setAccount(null);
+  };
+
+  if (loading) return <LoadingScreen />;
+  if (!account) return <AuthScreen onAuthenticated={setAccount} />;
+
+  const developerTools = showDeveloperTools ?? (
+    DEV_BUILD
+    && typeof window !== 'undefined'
+    && new URLSearchParams(window.location.search).get('tools') === '1'
+  );
+  return (
+    <ClinicalWorkspace
+      account={account}
+      onLogout={() => void logout()}
+      showDeveloperTools={developerTools}
+    />
   );
 }
 

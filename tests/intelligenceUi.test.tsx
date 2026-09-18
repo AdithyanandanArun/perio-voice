@@ -2,7 +2,7 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe } from 'vitest-axe';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import App from '../src/App';
+import App from './TestApp';
 import type { SpeakerVerdict } from '../src/domain/types';
 
 const harness = vi.hoisted(() => ({

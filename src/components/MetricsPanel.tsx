@@ -22,7 +22,7 @@ export function MetricsPanel({ session, cadence }: MetricsPanelProps) {
       <div className="panel-heading compact">
         <div>
           <p className="section-index">03 · LATENCY</p>
-          <h2 id="metrics-title">Input response</h2>
+          <h2 id="metrics-title">Chart response</h2>
         </div>
         <Clock3 size={20} aria-hidden="true" />
       </div>
@@ -32,7 +32,7 @@ export function MetricsPanel({ session, cadence }: MetricsPanelProps) {
         <article><span>P95 tail</span><strong>{formatLatency(metrics.p95)}</strong></article>
       </div>
       <p className="helper-text">
-        Measured from detected speech start (or simulator input start) to structured chart commit.
+        Measured from the last voiced audio frame to the structured chart update.
       </p>
       <dl className="counter-grid" aria-label="Pipeline decisions this session">
         <div><dt>Charted</dt><dd>{counters.chartable}</dd></div>

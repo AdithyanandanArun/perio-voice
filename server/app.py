@@ -15,8 +15,16 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
 from server.audio import decode_pcm16
+from server.auth import (
+    SESSION_COOKIE,
+    SESSION_TTL_SECONDS,
+    Account,
+    AuthError,
+    AuthStore,
+)
 from server.config import Settings, service_settings
 from server.prompt import prompt_version
 from server.recognizer import ModelStatus, Recognizer
@@ -40,16 +48,68 @@ MAX_FIXTURE_PCM_BYTES = FIXTURE_SAMPLE_RATE * 2 * MAX_FIXTURE_SECONDS
 SAFE_FIXTURE_ID = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
 
 
+class RegisterRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
 def create_app(
     recognizer: Recognizer | None = None,
     settings: Settings | None = None,
     *,
     preload: bool = True,
+    auth_store: AuthStore | None = None,
+    auth_required: bool = True,
 ) -> FastAPI:
     resolved_settings = settings or service_settings()
     resolved_recognizer = recognizer or RoutedRecognizer(resolved_settings)
     telemetry = Telemetry()
-    speaker_gate = SpeakerGate(resolved_settings)
+    resolved_auth_store = auth_store or (AuthStore.from_env() if auth_required else None)
+    owns_auth_store = auth_required and auth_store is None
+    local_speaker_gate = SpeakerGate(resolved_settings)
+    account_speaker_gates: dict[str, SpeakerGate] = {}
+
+    def speaker_gate_for(account: Account | None) -> SpeakerGate:
+        if account is None:
+            return local_speaker_gate
+        cached = account_speaker_gates.get(account.id)
+        if cached is not None:
+            return cached
+        gate = SpeakerGate(resolved_settings)
+        if resolved_auth_store is not None:
+            snapshot = resolved_auth_store.load_voice_profile(account.id)
+            if snapshot is not None:
+                gate.restore(snapshot)
+        account_speaker_gates[account.id] = gate
+        return gate
+
+    def request_account(request: Request) -> Account | None:
+        if not auth_required:
+            return None
+        assert resolved_auth_store is not None
+        account = resolved_auth_store.account_for_session(request.cookies.get(SESSION_COOKIE))
+        if account is None:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        return account
+
+    def verify_origin(request: Request) -> None:
+        origin = request.headers.get("origin")
+        if origin is not None and origin not in resolved_settings.allowed_origins:
+            raise HTTPException(status_code=403, detail="Request origin is not allowed.")
+
+    def account_message(account: Account) -> dict[str, object]:
+        assert resolved_auth_store is not None
+        return account.as_message(
+            voice_enrolled=resolved_auth_store.voice_enrolled(
+                account.id, resolved_settings.speaker_enroll_ms
+            )
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -62,12 +122,65 @@ def create_app(
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        if owns_auth_store and resolved_auth_store is not None:
+            resolved_auth_store.close()
 
     app = FastAPI(title="Perio Voice Local ASR", version="0.2.0", lifespan=lifespan)
     app.state.recognizer = resolved_recognizer
     app.state.settings = resolved_settings
     app.state.telemetry = telemetry
-    app.state.speaker_gate = speaker_gate
+    app.state.auth_store = resolved_auth_store
+    app.state.speaker_gate = local_speaker_gate
+    app.state.speaker_gates = account_speaker_gates
+
+    @app.post("/api/auth/register", status_code=201)
+    async def register(
+        payload: RegisterRequest, request: Request, response: Response
+    ) -> dict[str, object]:
+        verify_origin(request)
+        if not auth_required:
+            raise HTTPException(status_code=404, detail="Authentication is disabled.")
+        assert resolved_auth_store is not None
+        try:
+            account = resolved_auth_store.create_account(
+                payload.name, payload.email, payload.password
+            )
+        except AuthError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        token = resolved_auth_store.create_session(account.id)
+        _set_session_cookie(request, response, token)
+        return {"account": account_message(account)}
+
+    @app.post("/api/auth/login")
+    async def login(
+        payload: LoginRequest, request: Request, response: Response
+    ) -> dict[str, object]:
+        verify_origin(request)
+        if not auth_required:
+            raise HTTPException(status_code=404, detail="Authentication is disabled.")
+        assert resolved_auth_store is not None
+        account = resolved_auth_store.authenticate(payload.email, payload.password)
+        if account is None:
+            raise HTTPException(status_code=401, detail="Email or password is incorrect.")
+        token = resolved_auth_store.create_session(account.id)
+        _set_session_cookie(request, response, token)
+        return {"account": account_message(account)}
+
+    @app.get("/api/auth/me")
+    async def authenticated_account(request: Request) -> dict[str, object]:
+        account = request_account(request)
+        if account is None:
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        return {"account": account_message(account)}
+
+    @app.post("/api/auth/logout", status_code=204)
+    async def logout(request: Request, response: Response) -> Response:
+        verify_origin(request)
+        if resolved_auth_store is not None:
+            resolved_auth_store.revoke_session(request.cookies.get(SESSION_COOKIE))
+        response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="strict")
+        response.status_code = 204
+        return response
 
     # Deliberately register no path operation unless the operator opts in before
     # starting the service. A disabled capture endpoint therefore returns the
@@ -168,17 +281,19 @@ def create_app(
             ],
             "cadenceAdaptive": resolved_settings.cadence_adaptive,
         }
-        message["speaker"] = speaker_gate.state().as_message()
+        message["speaker"] = {"accountScoped": auth_required}
         return message
 
     @app.get("/api/metrics")
-    async def metrics() -> dict[str, Any]:
+    async def metrics(request: Request) -> dict[str, Any]:
+        request_account(request)
         return telemetry.snapshot()
 
     @app.get("/api/speaker")
-    async def speaker_state() -> dict[str, Any]:
+    async def speaker_state(request: Request) -> dict[str, Any]:
+        gate = speaker_gate_for(request_account(request))
         return {
-            **speaker_gate.state().as_message(),
+            **gate.state().as_message(),
             "acceptThreshold": resolved_settings.speaker_accept,
             "rejectThreshold": resolved_settings.speaker_reject,
             "enrollMs": resolved_settings.speaker_enroll_ms,
@@ -186,26 +301,47 @@ def create_app(
 
     @app.post("/api/speaker/enroll")
     async def enroll_speaker(request: Request, response: Response) -> dict[str, Any]:
+        verify_origin(request)
+        account = request_account(request)
+        gate = speaker_gate_for(account)
         payload = await request.body()
         try:
             audio = decode_pcm16(payload)
-            state = speaker_gate.enroll(audio)
+            state = gate.enroll(audio)
         except ValueError as error:
             response.status_code = 400
-            return {"error": str(error), **speaker_gate.state().as_message()}
+            return {"error": str(error), **gate.state().as_message()}
+        if account is not None and resolved_auth_store is not None:
+            snapshot = gate.snapshot()
+            if snapshot is not None:
+                resolved_auth_store.save_voice_profile(account.id, snapshot)
         return state.as_message()
 
     @app.post("/api/speaker/reset")
-    async def reset_speaker() -> dict[str, Any]:
-        """Revokes the enrolled profile. Nothing about it was ever persisted."""
-        return speaker_gate.reset().as_message()
+    async def reset_speaker(request: Request) -> dict[str, Any]:
+        verify_origin(request)
+        account = request_account(request)
+        gate = speaker_gate_for(account)
+        if account is not None and resolved_auth_store is not None:
+            resolved_auth_store.delete_voice_profile(account.id)
+        return gate.reset().as_message()
 
     @app.websocket("/ws/asr")
     async def asr_socket(websocket: WebSocket) -> None:
+        account: Account | None = None
+        if auth_required:
+            assert resolved_auth_store is not None
+            account = resolved_auth_store.account_for_session(
+                websocket.cookies.get(SESSION_COOKIE)
+            )
+            if account is None:
+                await websocket.close(code=4401, reason="Authentication required.")
+                return
         origin = websocket.headers.get("origin")
         if origin is not None and origin not in resolved_settings.allowed_origins:
             await websocket.close(code=1008, reason="WebSocket origin is not allowed.")
             return
+        gate = speaker_gate_for(account)
         await websocket.accept()
         telemetry.count("connections_total")
         send_lock = asyncio.Lock()
@@ -287,7 +423,7 @@ def create_app(
                         resolved_settings,
                         send,
                         telemetry=telemetry,
-                        speaker_gate=speaker_gate if speaker_gate.enrolled else None,
+                        speaker_gate=gate if gate.enrolled else None,
                     )
                     await session.start()
                     await send({"type": "listening"})
@@ -342,6 +478,18 @@ def create_app(
                     await session.close()
 
     return app
+
+
+def _set_session_cookie(request: Request, response: Response, token: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=request.url.scheme == "https" or os.getenv("PERIO_SECURE_COOKIES") == "1",
+        samesite="strict",
+        path="/",
+    )
 
 
 async def _load_model(recognizer: Recognizer, telemetry: Telemetry) -> None:

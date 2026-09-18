@@ -31,11 +31,11 @@ export function SpeakerPanel({
 }: SpeakerPanelProps) {
   const enrolled = enrollment?.enrolled === true;
   return (
-    <div className="speaker-panel" aria-labelledby="speaker-title">
+    <div className="speaker-panel" id="voice-profile" aria-labelledby="speaker-title">
       <div className="speaker-heading">
         <span id="speaker-title">
           <UserCheck size={17} aria-hidden="true" />
-          Voice attribution
+          My voice profile
         </span>
         <span className={`speaker-state ${enrolled ? 'is-enrolled' : ''}`} aria-live="polite">
           {enrolled ? `Enrolled · ${enrollment?.samples ?? 0} sample(s)` : 'No voice enrolled'}
@@ -69,8 +69,8 @@ export function SpeakerPanel({
         )}
       </div>
       <p className="helper-text">
-        The profile stays in the local service memory, is never written to disk, and is revoked the
-        moment you ask. Read a sentence aloud for a few seconds to enrol.
+        Your profile is stored for this account by the local service. Read a sentence aloud for a
+        few seconds to enrol; you can revoke it at any time.
       </p>
     </div>
   );

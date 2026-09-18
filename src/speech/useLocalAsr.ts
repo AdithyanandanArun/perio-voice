@@ -55,6 +55,16 @@ export interface LocalAsrController {
 
 /** Seconds of speech requested when enrolling a clinician's voice. */
 export const ENROLLMENT_SECONDS = 6;
+/** Browser-side floor used only to timestamp the last voiced PCM batch sent. */
+export const CLIENT_VOICE_LEVEL_FLOOR = 0.004;
+
+export function responseWindowStart(
+  lastVoicedAt: number | null,
+  speechDetectedAt: number | null,
+  observedAt: number,
+): number {
+  return lastVoicedAt ?? speechDetectedAt ?? observedAt;
+}
 
 
 interface CaptureResources {
@@ -93,7 +103,10 @@ export function useLocalAsr({ onFinal, contextVersion }: UseLocalAsrOptions): Lo
   const socketRef = useRef<WebSocket | null>(null);
   const captureRef = useRef<CaptureResources | null>(null);
   const desiredListeningRef = useRef(false);
-  const speechStartedAtRef = useRef<number | null>(null);
+  const lastVoicedFrameAtRef = useRef<number | null>(null);
+  const utteranceLastVoicedAtRef = useRef<number | null>(null);
+  const speechDetectedAtRef = useRef<number | null>(null);
+  const utteranceActiveRef = useRef(false);
   const observedVersionRef = useRef<number | null>(null);
   const contextVersionRef = useRef(contextVersion);
   const reconnectTimerRef = useRef<number | null>(null);
@@ -155,7 +168,9 @@ export function useLocalAsr({ onFinal, contextVersion }: UseLocalAsrOptions): Lo
         setStatus('listening');
         break;
       case 'speech_start':
-        speechStartedAtRef.current ??= performance.now() - 100;
+        utteranceActiveRef.current = true;
+        utteranceLastVoicedAtRef.current = lastVoicedFrameAtRef.current;
+        speechDetectedAtRef.current = performance.now();
         observedVersionRef.current = contextVersionRef.current?.() ?? null;
         setStatus('processing');
         break;
@@ -174,7 +189,13 @@ export function useLocalAsr({ onFinal, contextVersion }: UseLocalAsrOptions): Lo
           onFinalRef.current({
             transcript,
             timing: {
-              startedAt: speechStartedAtRef.current ?? observedAt,
+              // Latency starts when the last voiced PCM batch left the browser.
+              // This intentionally excludes the time the clinician was speaking.
+              startedAt: responseWindowStart(
+                utteranceLastVoicedAtRef.current,
+                speechDetectedAtRef.current,
+                observedAt,
+              ),
               observedAt,
             },
             words: readWords(message),
@@ -186,7 +207,9 @@ export function useLocalAsr({ onFinal, contextVersion }: UseLocalAsrOptions): Lo
             observedVersion: observedVersionRef.current,
           });
         }
-        speechStartedAtRef.current = null;
+        utteranceActiveRef.current = false;
+        utteranceLastVoicedAtRef.current = null;
+        speechDetectedAtRef.current = null;
         observedVersionRef.current = null;
         setInterimTranscript('');
         setLatestDecodeMs(message.decodeMs ?? null);
@@ -284,6 +307,11 @@ export function useLocalAsr({ onFinal, contextVersion }: UseLocalAsrOptions): Lo
         setAudioLevel(Math.min(1, event.data.level * 4));
         const socket = socketRef.current;
         if (desiredListeningRef.current && socket?.readyState === WebSocket.OPEN) {
+          if (event.data.level >= CLIENT_VOICE_LEVEL_FLOOR) {
+            const voicedAt = performance.now();
+            lastVoicedFrameAtRef.current = voicedAt;
+            if (utteranceActiveRef.current) utteranceLastVoicedAtRef.current = voicedAt;
+          }
           socket.send(event.data.pcm);
         }
       };
@@ -316,7 +344,10 @@ export function useLocalAsr({ onFinal, contextVersion }: UseLocalAsrOptions): Lo
 
   const stop = useCallback(() => {
     desiredListeningRef.current = false;
-    speechStartedAtRef.current = null;
+    lastVoicedFrameAtRef.current = null;
+    utteranceLastVoicedAtRef.current = null;
+    speechDetectedAtRef.current = null;
+    utteranceActiveRef.current = false;
     setInterimTranscript('');
     const socket = socketRef.current;
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'stop' }));

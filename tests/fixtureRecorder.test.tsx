@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import App from '../src/App';
+import App from './TestApp';
 import {
   FixtureRecorder,
   type DentalFixtureManifest,

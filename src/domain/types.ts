@@ -111,7 +111,9 @@ export interface ClinicalEvent {
 }
 
 export interface TranscriptTiming {
+  /** Last voiced input frame for ASR, or input start for deterministic evaluation tools. */
   startedAt: number;
+  /** Final recognition result observed by the charting client. */
   observedAt: number;
 }
 

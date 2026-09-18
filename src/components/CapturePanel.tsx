@@ -13,6 +13,7 @@ interface CapturePanelProps {
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onExample: (phrase: string) => void;
   onStart: () => void;
+  showDeveloperTools?: boolean;
 }
 
 export function CapturePanel({
@@ -24,6 +25,7 @@ export function CapturePanel({
   onSubmit,
   onExample,
   onStart,
+  showDeveloperTools = false,
 }: CapturePanelProps) {
   return (
     <section
@@ -128,37 +130,39 @@ export function CapturePanel({
         onRevoke={() => void speech.revokeEnrollment()}
       />
 
-      <form className="simulator" onSubmit={onSubmit}>
-        <label htmlFor="transcript-input">Transcript simulator</label>
-        <textarea
-          id="transcript-input"
-          value={simulatedTranscript}
-          onChange={(event) => onSimulatedChange(event.target.value)}
-          placeholder="Try: three four five"
-          autoComplete="off"
-          rows={2}
-          aria-describedby="auto-chart-help"
-        />
-        <div className="input-row">
-          <button className="button button-primary" type="submit" disabled={!simulatedTranscript.trim()}>
-            <Sparkles size={18} aria-hidden="true" />
-            Process
-          </button>
+      {showDeveloperTools && (
+        <div className="developer-tools">
+          <p className="developer-label">Development tools</p>
+          <form className="simulator" onSubmit={onSubmit}>
+            <label htmlFor="transcript-input">Transcript simulator</label>
+            <textarea
+              id="transcript-input"
+              value={simulatedTranscript}
+              onChange={(event) => onSimulatedChange(event.target.value)}
+              placeholder="Try: three four five"
+              autoComplete="off"
+              rows={2}
+              aria-describedby="auto-chart-help"
+            />
+            <div className="input-row">
+              <button className="button button-primary" type="submit" disabled={!simulatedTranscript.trim()}>
+                <Sparkles size={18} aria-hidden="true" /> Process
+              </button>
+            </div>
+            <p className="helper-text" id="auto-chart-help">
+              Use a normal phrase, or separate complete station directives with a semicolon or new
+              line. Automatic batches require a tooth and surface in every directive.
+            </p>
+          </form>
+          <div className="phrase-list" aria-label="Example clinical phrases">
+            {examples.map((phrase) => (
+              <button key={phrase} type="button" onClick={() => onExample(phrase)}>
+                “{phrase}”
+              </button>
+            ))}
+          </div>
         </div>
-        <p className="helper-text" id="auto-chart-help">
-          Use a normal phrase, or separate complete station directives with a semicolon or new line.
-          Automatic batches require a tooth and surface in every directive; if one is unsafe, none
-          of the batch is charted.
-        </p>
-      </form>
-
-      <div className="phrase-list" aria-label="Example clinical phrases">
-        {examples.map((phrase) => (
-          <button key={phrase} type="button" onClick={() => onExample(phrase)}>
-            “{phrase}”
-          </button>
-        ))}
-      </div>
+      )}
     </section>
   );
 }

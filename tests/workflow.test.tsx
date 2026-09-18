@@ -1,7 +1,7 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
-import App from '../src/App';
+import App from './TestApp';
 
 async function simulate(user: ReturnType<typeof userEvent.setup>, phrase: string) {
   const input = screen.getByLabelText('Transcript simulator');
@@ -14,7 +14,7 @@ describe('clinician workflow', () => {
   it('renders a clear fallback when local microphone capture is unavailable', () => {
     render(<App />);
     expect(screen.getByText(/local microphone capture is unavailable here/i)).toBeInTheDocument();
-    expect(screen.getAllByText('Simulator available').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Voice unavailable').length).toBeGreaterThan(0);
   });
 
   it('commits depths, bleeding, and a natural correction to the live chart', async () => {

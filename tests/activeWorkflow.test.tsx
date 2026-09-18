@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import App from '../src/App';
+import App from './TestApp';
 
 interface HarnessFinal {
   transcript: string;

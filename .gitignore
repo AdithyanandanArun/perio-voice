@@ -19,6 +19,7 @@ graphify-out/
 *.tsbuildinfo
 evaluation/results/
 .serena/
+data/
 
 # Local secrets (API keys). Never commit.
 .env

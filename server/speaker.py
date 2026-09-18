@@ -115,6 +115,38 @@ class VoiceProfile:
     voiced_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class SpeakerProfileSnapshot:
+    """Persistable state for one account's enrolled voice profile."""
+
+    spectral: NDArray[np.float32]
+    cepstral: NDArray[np.float32]
+    samples: int
+    voiced_ms: int
+
+    def as_bytes(self) -> tuple[bytes, bytes]:
+        return self.spectral.astype("<f4", copy=False).tobytes(), self.cepstral.astype(
+            "<f4", copy=False
+        ).tobytes()
+
+    @classmethod
+    def from_bytes(
+        cls,
+        *,
+        spectral: bytes,
+        spectral_size: int,
+        cepstral: bytes,
+        cepstral_size: int,
+        samples: int,
+        voiced_ms: int,
+    ) -> SpeakerProfileSnapshot:
+        spectral_array = np.frombuffer(spectral, dtype="<f4").copy()
+        cepstral_array = np.frombuffer(cepstral, dtype="<f4").copy()
+        if len(spectral_array) != spectral_size or len(cepstral_array) != cepstral_size:
+            raise ValueError("Stored voice profile dimensions are invalid.")
+        return cls(spectral_array, cepstral_array, samples, voiced_ms)
+
+
 def _hz_to_mel(hz: float) -> float:
     return 2595.0 * float(np.log10(1.0 + hz / 700.0))
 
@@ -232,6 +264,24 @@ class SpeakerGate:
         return EnrollmentState(
             self.enrolled, self._samples, self._voiced_ms, self.settings.speaker_enroll_ms
         )
+
+    def snapshot(self) -> SpeakerProfileSnapshot | None:
+        if self._spectral is None or self._cepstral is None:
+            return None
+        return SpeakerProfileSnapshot(
+            self._spectral.copy(),
+            self._cepstral.copy(),
+            self._samples,
+            self._voiced_ms,
+        )
+
+    def restore(self, snapshot: SpeakerProfileSnapshot) -> EnrollmentState:
+        self._spectral = snapshot.spectral.copy()
+        self._cepstral = snapshot.cepstral.copy()
+        self._samples = snapshot.samples
+        self._voiced_ms = snapshot.voiced_ms
+        self.forget_window()
+        return self.state()
 
     def reset(self) -> EnrollmentState:
         """Revokes the stored profile. Enrollment data never leaves this process."""

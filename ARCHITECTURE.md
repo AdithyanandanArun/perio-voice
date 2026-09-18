@@ -22,6 +22,7 @@ remains available when the voice service is not.
 
 ```text
 Browser (React)
+  authenticated account shell (HttpOnly opaque session cookie)
   getUserMedia
     → AudioWorklet (mono, resample, 16 kHz PCM16, 100 ms frames)
     → binary WebSocket /ws/asr
@@ -37,11 +38,12 @@ Browser (React)
     → immutable session reducer
     → live chart + append-only journal + audit trail + latency samples
 
-Transcript simulator ──────────────────────────────────────┘
+Development-only transcript simulator (?tools=1) ─────────┘
 
-GET /api/health   ← model lifecycle, runtime contract, enrolment state
-GET /api/metrics  ← bounded counters and duration histograms
-POST /api/speaker/enroll, /api/speaker/reset ← local, revocable voice profile
+POST /api/auth/*  ← PBKDF2 account credentials + revocable server-side sessions
+GET /api/health  ← public model lifecycle and runtime contract
+GET /api/metrics ← authenticated bounded counters and duration histograms
+POST /api/speaker/enroll, /api/speaker/reset ← account-scoped voice profile
 
 Opt-in fixture path (development only)
   pinned Piper TTS WAV → laptop speakers → room + microphone
@@ -56,7 +58,8 @@ Component ownership:
   conversion, 100 ms batching, transferable delivery, input level.
 - `src/speech/useLocalAsr.ts` — microphone permission, socket lifecycle,
   reconnects, model states, enrolment capture, and complete resource cleanup. It
-  reads the clinical context version at speech start, not at commit.
+  reads the clinical context version at speech start and timestamps the last
+  voiced PCM frame for response-latency reporting.
 - `src/speech/acousticReplay.ts` — synchronized local Piper playback,
   playback, deterministic operatory-noise playback, cancellation and captured
   PCM audibility measurement. It does not run in the recognition path.
@@ -67,6 +70,8 @@ Component ownership:
 - `server/cadence.py` — adapts the endpoint threshold to the speaker's pacing.
 - `server/denoise.py` — named preprocessing profiles.
 - `server/speaker.py` — enrolment and verification of the clinician's voice.
+- `server/auth.py` — local accounts, password hashing, opaque sessions, and
+  persisted account-scoped voice profiles.
 - `server/session.py` — per-stream backpressure and serialized recognition.
   Pending partials may be superseded; finals are never intentionally dropped.
 - `server/recognizer.py` — the inference adapter. One lazily loaded model, CPU
@@ -104,10 +109,10 @@ so pitch and formants move together, keeping the speaking style — peaks at
 re-measures it rather than asserting it.
 
 Anything between the thresholds reports `unknown` and is held for a human
-decision. Enrolment data stays in process memory, is never written to disk, and
-is revoked by a single request. Attribution is always visible and always
-overridable, because hidden attribution is worse than none: a clinician cannot
-correct a decision they cannot see.
+decision. Enrolment data is persisted in the local SQLite store under the
+authenticated hygienist account and is revoked by a single request. Attribution
+is always visible and always overridable, because hidden attribution is worse
+than none: a clinician cannot correct a decision they cannot see.
 
 **This does not currently work, and it is off by default.** The calibration above
 compared equal-length segments, which is not the comparison the product makes.
@@ -370,7 +375,11 @@ boundary is what prevents unstable hypotheses from duplicating values.
 
 ## Latency budget
 
-Measured from speech onset to structured chart paint on the reference CPU:
+The product response metric starts at the last voiced PCM frame sent by the
+browser and ends when the final recognition result enters the structured chart
+reducer. It deliberately excludes the time the clinician is speaking and
+includes endpoint silence, final decoding, transport, and deterministic chart
+processing.
 
 | Stage | Target | Enforcement/measurement |
 | --- | ---: | --- |
@@ -381,7 +390,7 @@ Measured from speech onset to structured chart paint on the reference CPU:
 | Tiny.en CPU INT8 final decode | p95 < 700 ms after endpoint | `decodeMs`; hardware dependent |
 | large-v3 CUDA FP16 final decode | p95 < 700 ms after endpoint; measured 373 ms decode, 420 ms endpoint→final live (RTX 4060) | `decodeMs`; G43, and endpoint→final at the client in G44 |
 | Clinical pipeline | p95 < 10 ms | `parserSamples`; gated in `tests/pipeline.test.ts` and the clinical harness |
-| Speech onset → chart commit | median < 1.2 s, p95 < 2.0 s | session latency panel and evaluation harness |
+| Last voiced frame → structured chart update | p95 < 1.2 s | session latency panel and browser adapter tests |
 
 Endpoint silence dominates perceived delay, which is why it adapts. On a GPU
 `large-v3` decodes a final in ~330 ms median with beam 5, faster than the CPU

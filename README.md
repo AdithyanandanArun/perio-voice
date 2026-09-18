@@ -54,7 +54,8 @@ npm run dev
 `npm run setup` installs the Python environment and downloads the grammar
 recognizer model (~128 MB) into `models/`.
 
-Open `http://127.0.0.1:5173`. The single development command starts the local ASR
+Open `http://127.0.0.1:5173` and create a hygienist account. The single
+development command starts the local ASR
 API on port 8000 and Vite on port 5173, proxies `/api` and `/ws`, and shuts both
 processes down on Ctrl+C.
 
@@ -71,8 +72,8 @@ available at **Voice model ready**. Later starts reuse the local artifact.
 
 Allow microphone access, select **Start listening**, and say `three four five`.
 Only final results reach the chart — partial text is feedback and cannot create a
-duplicate value. The transcript simulator always remains available and calls the
-same pipeline.
+duplicate value. The transcript simulator is a development tool available only
+with `?tools=1`; it is not shown in the normal clinical workspace.
 
 ## Supported clinical speech
 
@@ -211,18 +212,23 @@ it.
 
 ## Runtime endpoints
 
+- `POST /api/auth/register`, `/api/auth/login`, `/api/auth/logout` and
+  `GET /api/auth/me` — local hygienist accounts and revocable, HttpOnly session
+  cookies. Passwords are PBKDF2-hashed and the SQLite data directory is ignored
+  by git.
 - `GET /api/health` — model status, name, device, compute type, sample rate, the
   runtime contract (protocol, prompt version, preprocessing profile, endpoint
-  band) and enrolment state.
+  band) and account-scoped enrollment capability.
 - `GET /api/metrics` — bounded counters and duration histograms. No transcripts,
-  no audio, no identifiers.
-- `GET /api/speaker` — enrolment state and configured thresholds.
+  no audio, no identifiers. Authentication is required.
+- `GET /api/speaker` — the signed-in hygienist's enrollment state and configured
+  thresholds.
 - `POST /api/speaker/enroll` — raw PCM16 body; adds a sample to the local voice
-  profile.
+  profile and persists it under the signed-in account.
 - `POST /api/speaker/reset` — revokes the profile immediately.
 - `WS /ws/asr` — JSON `start`/`stop`/`context`/`ping`/`retry_model` controls and
   little-endian mono PCM16 audio; emits model, speech, partial, final, metrics,
-  stop and error messages.
+  stop and error messages. The socket requires the same session cookie.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the pipeline design, protocol,
 latency budget, backpressure policy, observability, privacy boundary, deployment

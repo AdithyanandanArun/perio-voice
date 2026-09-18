@@ -6,10 +6,15 @@ import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from server.app import create_app
+from server.app import create_app as build_app
 from server.config import Settings
 from server.telemetry import COUNTERS, HISTOGRAMS, RESERVOIR, Telemetry
 from tests.server.fakes import FakeRecognizer
+
+
+def create_app(*args: object, **kwargs: object) -> object:
+    kwargs["auth_required"] = False
+    return build_app(*args, **kwargs)  # type: ignore[arg-type, return-value]
 
 
 def pcm_frame(level: float, milliseconds: int = 100) -> bytes:

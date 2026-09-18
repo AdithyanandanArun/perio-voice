@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { axe } from 'vitest-axe';
 import { describe, expect, it } from 'vitest';
-import App from '../src/App';
+import App from './TestApp';
 
 describe('accessibility', () => {
   it('has no automated accessibility violations in its initial state', async () => {
