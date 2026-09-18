@@ -67,8 +67,11 @@ node ~/.claude/skills/unlazy/scripts/gate-check.mjs --reverify --timeout 600 GAT
    plausible.
 5. **Uncertain means ask, not guess — with one owner decision.** A false chart
    entry costs far more than an utterance the clinician repeats. The
-   low-confidence polarity hold, the cross-station correction hold and the
-   missing-grade hold are deliberate. **Owner decision (2026-09-18):** the core
+   low-confidence polarity hold and the cross-station correction hold are
+   deliberate. **Owner decision (2026-09-19):** a graded finding said without a
+   grade ("mobility", "furcation") charts grade 1, as CareStack documents for
+   its own voice charting — asking is an annoyance mid-exam, and the clinician
+   corrects by saying the grade. Do not add a missing-grade hold. **Owner decision (2026-09-18):** the core
    relevance mode is `balanced` — confidently non-chartable speech is blocked,
    but the `uncertain` band is no longer held for confirmation (the strict filter
    held too much real speech). `enforce`/`shadow` remain for evaluation
@@ -92,6 +95,14 @@ These each cost real debugging. They are not obvious from the code.
   decoding cannot, but it is still one synthetic Piper voice. Evaluate it with
   `--audio-root evaluation/fixtures/dental/audio/tts-replay`; never present its
   score as human or clinical performance.
+- **The replay corpus cannot judge endpointing or natural phrasing.** The Piper
+  voice never pauses mid-sentence and never says "okay, three four five".
+  On 2026-09-18 an agent cut the end-silence window to 300 ms, disabled
+  partials and added an "unanchored numbers" hold: replay rose to 101/104 with
+  0/28 false entries, yet on the owner's own voice the app split natural pauses,
+  asked for confirmation far more and understood natural speech worse. It was
+  reverted (kept on branch `backup/codex-accuracy-latency-2026-09-19`). Changes
+  to endpointing, holds or relevance need a human-voice check, not just replay.
 - **The JFK fixture has ~22 reference words, so one word error is 0.045 WER.**
   Differences of 1–2 word errors are *not* evidence. A confident conclusion was
   drawn twice from exactly that and was wrong both times.
