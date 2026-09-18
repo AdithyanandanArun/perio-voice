@@ -14,7 +14,7 @@
  */
 
 import { categoryOf, isCanonicalTerm } from './lexicon';
-import type { AsrWord } from './types';
+import { MAX_TOOTH, type AsrWord } from './types';
 
 export type CandidateKind = 'number' | 'term' | 'filler' | 'unknown';
 export type CandidateSource = 'literal' | 'homophone' | 'lexicon';
@@ -164,6 +164,41 @@ export function homophoneNumber(token: string): number | null {
  * Merges spoken compound numbers into one token so "twenty eight" and
  * "twenty-eight" both become a single numeric node.
  */
+/**
+ * Splits numerals that a transcriber wrote as one token back into spoken digits.
+ *
+ * Large recognizers format numbers. Measured on recorded dental audio,
+ * `large-v3-turbo` wrote "three four five" as `345.`, `3-4-5` and `3, 4, 5`, and
+ * "three thirteen five" as `313-5.`. The recognition was right, but a single
+ * token like `345` is not a number this chart can hold, so a correct hearing
+ * charted nothing at all.
+ *
+ * Only unambiguous cases are split. Nothing in a periodontal chart exceeds 32,
+ * so a run of three or more digits, or a two-digit value above the highest tooth
+ * number, can only be several spoken digits. Hyphen-joined groups are split on
+ * the hyphen. Values from 1 to 32 are left whole, because "fourteen" and
+ * "one four" are genuinely different readings and the context resolver, not this
+ * function, is where that is decided.
+ *
+ * Out-of-range readings still reach validation: `313-5` becomes 3, 1, 3, 5,
+ * which is four values for three sites and is rejected as a unit.
+ */
+export function expandNumerals(tokens: readonly string[]): string[] {
+  const expanded: string[] = [];
+  for (const token of tokens) {
+    if (/^\d+(?:-\d+)+$/.test(token)) {
+      expanded.push(...expandNumerals(token.split('-')));
+    } else if (/^\d{3,}$/.test(token)) {
+      expanded.push(...token.split(''));
+    } else if (/^\d{2}$/.test(token) && Number(token) > MAX_TOOTH) {
+      expanded.push(...token.split(''));
+    } else {
+      expanded.push(token);
+    }
+  }
+  return expanded;
+}
+
 export function mergeCompoundNumbers(tokens: readonly string[]): string[] {
   const merged: string[] = [];
   for (let index = 0; index < tokens.length; index += 1) {
@@ -241,7 +276,7 @@ export function buildLattice(
   tokens: readonly string[],
   options: BuildLatticeOptions = {},
 ): LatticeNode[] {
-  const merged = mergeCompoundNumbers(tokens);
+  const merged = mergeCompoundNumbers(expandNumerals(tokens));
   const words = options.words ?? [];
   const aligned = words.length === merged.length;
   return merged.map((token, index) => ({

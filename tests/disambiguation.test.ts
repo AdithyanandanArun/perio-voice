@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildLattice, isPotentialNumber, mergeCompoundNumbers } from '../src/domain/lattice';
+import {
+  buildLattice,
+  expandNumerals,
+  isPotentialNumber,
+  mergeCompoundNumbers,
+} from '../src/domain/lattice';
 import { canonicalize } from '../src/domain/lexicon';
 import {
   deriveExpectation,
@@ -132,5 +137,30 @@ describe('context-aware disambiguation', () => {
     const result = resolve('to for ate');
     expect(result.ambiguities).toHaveLength(3);
     expect(result.ambiguities[0]).toMatchObject({ chosen: 'to→2', confidence: expect.any(Number) });
+  });
+});
+
+describe('numerals written by large recognizers', () => {
+  it('splits a grouped depth run written as one numeral', () => {
+    expect(expandNumerals(['345'])).toEqual(['3', '4', '5']);
+    expect(expandNumerals(['3-4-5'])).toEqual(['3', '4', '5']);
+    expect(resolvedNumbers(resolve('345').tokens)).toEqual([3, 4, 5]);
+  });
+
+  it('splits a two-digit value no chart field can hold', () => {
+    expect(expandNumerals(['34'])).toEqual(['3', '4']);
+  });
+
+  it('leaves in-range values whole for the context resolver to judge', () => {
+    // "fourteen" and "one four" are different readings; this is not where
+    // that is decided.
+    expect(expandNumerals(['14'])).toEqual(['14']);
+    expect(expandNumerals(['32'])).toEqual(['32']);
+  });
+
+  it('keeps an out-of-range group rejectable rather than repaired', () => {
+    // "three thirteen five" written as 313-5 must still fail validation as a
+    // unit: it becomes four values for three sites.
+    expect(expandNumerals(['313-5'])).toEqual(['3', '1', '3', '5']);
   });
 });
