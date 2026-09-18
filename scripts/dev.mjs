@@ -1,6 +1,10 @@
 import { spawn } from 'node:child_process';
 import process from 'node:process';
 
+import { uvGpuArgs } from './gpu.mjs';
+
+const gpuExtra = uvGpuArgs();
+
 const children = new Set();
 let closing = false;
 
@@ -53,6 +57,7 @@ process.on('SIGTERM', () => void shutdown(0));
 
 launch('ASR service', 'uv', [
   'run',
+  ...gpuExtra,
   'uvicorn',
   'server.app:app',
   '--host',
