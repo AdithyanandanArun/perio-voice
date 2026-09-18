@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import re
 import statistics
 import subprocess
@@ -142,6 +143,41 @@ EXAMPLE_PROMPT_2 = (
 )
 
 
+class SpeechGated:
+    """Applies the service's speech checks around a whole-recording decode.
+
+    The service refuses a segment that is saturated or that Silero does not hear
+    as speech before decoding, and a final whose no-speech estimate exceeds the
+    threshold after. Scoring the shipped recognizer without them would measure a
+    configuration that does not run.
+    """
+
+    def __init__(self, inner: Any, presence_threshold: float, no_speech_threshold: float) -> None:
+        self.inner = inner
+        self.presence_threshold = presence_threshold
+        self.no_speech_threshold = no_speech_threshold
+
+    def transcribe(self, audio: Any, **options: Any) -> tuple[Iterator[Any], Any]:
+        from server.speech_presence import assess
+
+        if not assess(audio).is_speech(self.presence_threshold):
+            return iter(()), None
+        segments, info = self.inner.transcribe(audio, **options)
+        materialized = list(segments)
+        no_speech = max((float(s.no_speech_prob) for s in materialized), default=0.0)
+        if no_speech > self.no_speech_threshold:
+            return iter(()), info
+        return iter(materialized), info
+
+
+def gated(config: RuntimeConfig) -> Any:
+    from server.config import GPU_NO_SPEECH_THRESHOLD, GPU_SPEECH_PRESENCE_THRESHOLD
+
+    return SpeechGated(
+        whisper_factory(config), GPU_SPEECH_PRESENCE_THRESHOLD, GPU_NO_SPEECH_THRESHOLD
+    )
+
+
 class PromptedModel:
     """Adds decoding options to every transcribe call of a wrapped model."""
 
@@ -222,10 +258,16 @@ CANDIDATES: dict[str, Candidate] = {
         prompted(initial_prompt=EXAMPLE_PROMPT_2),
     ),
     # The shipped configuration: the prompt read from shared/dental-prompt.json
-    # through the same bias path the live recognizer uses, so what is measured
-    # here is exactly what runs.
+    # through the same bias path the live recognizer uses, and the service's
+    # speech checks, so what is measured here is exactly what runs.
     "shipped": Candidate(
         "shipped",
+        _config("large-v3", "cuda", "float16", bias="prompt"),
+        gated,
+    ),
+    # The same without the speech checks, to show what they cost.
+    "shipped-ungated": Candidate(
+        "shipped-ungated",
         _config("large-v3", "cuda", "float16", bias="prompt"),
         whisper_factory,
     ),
@@ -278,7 +320,9 @@ def chart_score(transcripts: Path) -> tuple[float, int, int, int, int]:
     )
 
 
-def run(names: list[str], audio_root: Path, out_dir: Path) -> list[dict[str, object]]:
+def run(
+    names: list[str], audio_root: Path, out_dir: Path, *, allow_missing: bool = True
+) -> list[dict[str, object]]:
     manifest = load_manifest(MANIFEST)
     inventory = discover_audio(manifest, audio_root)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -292,7 +336,7 @@ def run(names: list[str], audio_root: Path, out_dir: Path) -> list[dict[str, obj
             audio_root,
             inventory,
             candidate.config,
-            allow_missing=True,
+            allow_missing=allow_missing,
             model_factory=candidate.factory,
         )
         elapsed = time.perf_counter() - started
@@ -315,7 +359,7 @@ def run(names: list[str], audio_root: Path, out_dir: Path) -> list[dict[str, obj
             "falseEntries": false,
             "nonChartable": nonchart,
             "decodeP50": statistics.median(decode) if decode else 0,
-            "decodeP95": decode[max(0, int(len(decode) * 0.95) - 1)] if decode else 0,
+            "decodeP95": decode[max(0, math.ceil(len(decode) * 0.95) - 1)] if decode else 0,
             "seconds": round(elapsed, 1),
         }
         rows.append(row)
@@ -353,13 +397,72 @@ def rescore(out_dir: Path) -> list[dict[str, object]]:
     return rows
 
 
+# The acceptance bar for the recognizer the service ships. Measured at 94.2%
+# (98/104) with 1/28 false entries and p95 367 ms when it was adopted; the bar
+# sits below that because one scenario is ~1 point and differences of one or two
+# are noise on this set. The margin is over the recognizer it replaced.
+GATE_ENGINE = "shipped"
+GATE_BASELINE = "grammar"
+GATE_MIN_CHART = 0.90
+GATE_MAX_FALSE = 2
+GATE_MIN_MARGIN = 0.25
+GATE_MAX_P95_MS = 700
+
+
+def _number(row: dict[str, object], key: str) -> float:
+    value = row[key]
+    if not isinstance(value, int | float):
+        raise TypeError(f"{key} is not numeric: {value!r}")
+    return float(value)
+
+
+def gate(engine: str, audio_root: Path, out_dir: Path) -> int:
+    """Decides whether `engine` is good enough to be the one the service runs.
+
+    Every recording in the manifest must be present, so a partial capture cannot
+    pass on an easy subset. The replay recordings are one synthetic voice through
+    the laptop speakers: passing establishes that the recognizer and prompt work
+    through a real microphone path, not that clinicians will see the same number.
+    """
+    rows = run([engine, GATE_BASELINE], audio_root, out_dir, allow_missing=False)
+    chosen, baseline = rows
+    failures: list[str] = []
+    chart = _number(chosen, "chartExact")
+    margin = chart - _number(baseline, "chartExact")
+    false = int(_number(chosen, "falseEntries"))
+    p95 = int(_number(chosen, "decodeP95"))
+    if chart < GATE_MIN_CHART:
+        failures.append(f"chart exact {chart:.1%} below {GATE_MIN_CHART:.0%}")
+    if false > GATE_MAX_FALSE:
+        failures.append(f"{false} false chart entries, at most {GATE_MAX_FALSE} allowed")
+    if margin < GATE_MIN_MARGIN:
+        failures.append(f"margin over {GATE_BASELINE} {margin:+.1%} below {GATE_MIN_MARGIN:+.0%}")
+    if p95 > GATE_MAX_P95_MS:
+        failures.append(f"decode p95 {p95} ms above {GATE_MAX_P95_MS} ms")
+    for failure in failures:
+        print(f"FAIL {failure}")
+    if failures:
+        return 1
+    print(
+        f"BAKEOFF GATE PASS {engine}: chart {chart:.1%}, false {false}, "
+        f"margin {margin:+.1%} over {GATE_BASELINE}, p95 {p95} ms"
+    )
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rescore", action="store_true", help="score saved transcripts only")
     parser.add_argument("--engines", default=",".join(CANDIDATES), help="comma-separated")
     parser.add_argument("--audio-root", type=Path, default=REPLAY_ROOT)
     parser.add_argument("--out-dir", type=Path, default=Path("evaluation/results/bakeoff"))
+    parser.add_argument("--gate", action="store_true", help="decide the shipped recognizer")
+    parser.add_argument("--gate-engine", default=GATE_ENGINE, help="engine the gate judges")
     arguments = parser.parse_args()
+    if arguments.gate:
+        if arguments.gate_engine not in CANDIDATES:
+            parser.error(f"unknown engine: {arguments.gate_engine}")
+        return gate(arguments.gate_engine, arguments.audio_root, arguments.out_dir)
     if arguments.rescore:
         rescore(arguments.out_dir)
         return 0
