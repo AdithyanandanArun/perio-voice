@@ -65,5 +65,10 @@ launch('ASR service', 'uv', [
   '--port',
   '8000',
   '--reload',
+  // An open browser voice socket otherwise keeps the old worker in graceful
+  // shutdown forever after a code change, and the reloader never starts the new
+  // one: the API stops answering until the tab is closed.
+  '--timeout-graceful-shutdown',
+  '3',
 ]);
 launch('web app', process.execPath, ['node_modules/vite/bin/vite.js']);
