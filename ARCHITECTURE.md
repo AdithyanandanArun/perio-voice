@@ -170,6 +170,26 @@ rather than a capacity limit. The grammar's earlier 93% result depended on
 context-specific narrowing that could force one valid clinical word onto
 another; the full clinical grammar is intentionally less optimistic and safer.
 
+**On a GPU the router is bypassed.** `service_settings()` in `server/config.py`
+selects `ASR_ENGINE=whisper` with `large-v3` on CUDA whenever a CUDA device exists
+and cuBLAS/cuDNN load (`server/cuda_runtime.py` preloads them from the `gpu`
+extra's wheels, so no `LD_LIBRARY_PATH` is needed). On the 138 loudspeaker
+replay recordings, which cross a real speaker, room and microphone, `large-v3`
+prompted with example transcriptions reached 94.2% chart exact with 1/28 false
+entries, against 54.8% for the grammar and 53.8% for `tiny.en` — the grammar's
+synthetic-audio advantage did not survive a real capture path. The clinical
+pipeline below is unchanged: it never knew which engine produced a transcript,
+and the numeral forms a large model writes ("pd345", "3-4-5", "345") are
+expanded in the lattice rather than special-cased per engine.
+
+The prompt makes `large-v3` recite clinical text on noise and suppresses its
+own no-speech estimate, so the GPU profile decides "is this speech" outside the
+prompted model (`server/speech_presence.py`, applied in `server/session.py`
+before decoding): saturated captures are refused, Silero VAD must hear at least
+96 ms of sustained speech, and the no-speech threshold drops from 0.6 to 0.15.
+A refused final carries `reason: "no_speech"` or `"clipped"` and empty text, so
+nothing downstream can chart it; partials of refused audio are not decoded.
+
 Words a grammar lists but the lexicon lacks are dropped silently, and Vosk
 reports that only on C-level stderr. `scripts/verify_grammar_lexicon.py` gates
 coverage and `KNOWN_LEXICON_GAPS` records the genuine absences, so a clinical
@@ -341,13 +361,16 @@ Measured from speech onset to structured chart paint on the reference CPU:
 | Partial cadence | 700 ms | `ASR_PARTIAL_INTERVAL_MS` |
 | End-of-speech silence | 300–1100 ms, adaptive | `server/cadence.py`, reported on every final |
 | Tiny.en CPU INT8 final decode | p95 < 700 ms after endpoint | `decodeMs`; hardware dependent |
+| large-v3 CUDA FP16 final decode | p95 < 700 ms after endpoint; measured 373 ms decode, 420 ms endpoint→final live (RTX 4060) | `decodeMs`; G43, and endpoint→final at the client in G44 |
 | Clinical pipeline | p95 < 10 ms | `parserSamples`; gated in `tests/pipeline.test.ts` and the clinical harness |
 | Speech onset → chart commit | median < 1.2 s, p95 < 2.0 s | session latency panel and evaluation harness |
 
-Endpoint silence dominates perceived delay, which is why it adapts. Use `tiny.en`
-for the CPU demo; promote `base.en` or `small.en` only after accuracy gains are
-measured against the resulting tail latency. Avoid larger beams on the
-interactive path; the default is greedy with a single serialized model worker.
+Endpoint silence dominates perceived delay, which is why it adapts. On a GPU
+`large-v3` decodes a final in ~330 ms median with beam 5, faster than the CPU
+grammar recognizer it replaced (~415 ms), so accuracy no longer costs latency. Decode time is
+flat with utterance length (a fixed 30 s encoder window), so a partial costs as
+much as a final; partials are latest-wins and never block a final for more than
+one in-flight decode. There is a single serialized model worker per process.
 
 ## Backpressure and concurrency
 
@@ -438,9 +461,9 @@ validation.
 
 | Profile | Model/device | Use |
 | --- | --- | --- |
-| Reference demo | `tiny.en`, CPU, INT8 | Lowest setup cost and latency; current default |
-| Accuracy evaluation | `base.en`/`small.en`, CPU INT8 | Offline comparison before promotion |
-| Workstation | `small.en`, CUDA FP16/INT8 | Only after GPU/driver compatibility and latency tests |
+| Workstation GPU | `large-v3`, CUDA FP16, example prompt, Whisper only, speech checks | Default whenever a CUDA device and cuBLAS/cuDNN are usable; ~3.9 GB VRAM |
+| Reference CPU | grammar + `tiny.en`, CPU, INT8, routed | Default without a GPU, and with `ASR_DEVICE=cpu` |
+| Lower-latency GPU | `ASR_MODEL=large-v3-turbo` | ~95 ms faster median, ~10 points lower chart accuracy on replay |
 | Packaged clinic | pinned local artifact, no runtime download | Required direction for privacy-controlled deployment |
 
 Configuration is through the `ASR_*` environment variables in `server/config.py`.

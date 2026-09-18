@@ -1,8 +1,9 @@
 # Perio Voice — working context
 
 Local clinical voice intelligence layer for periodontal charting. Browser mic →
-local context-routed grammar/Whisper recognition → a deterministic clinical pipeline that decides what
-belongs in the chart, what it means, and where it goes.
+local recognition (Whisper `large-v3` on the GPU when one is usable, otherwise
+context-routed grammar/`tiny.en` on the CPU) → a deterministic clinical pipeline
+that decides what belongs in the chart, what it means, and where it goes.
 
 **The product is not the transcription.** It is the layer between recognition and
 the record. The recognizer is replaceable; that layer is the value. Read
@@ -12,6 +13,7 @@ planned next.
 ## Commands
 
 ```bash
+npm run setup                    # uv sync (+ gpu extra if /dev/nvidia0), fetch models
 npm run dev                      # backend (:8000) + frontend (:5173), one command
 node scripts/verify-quality.mjs  # lint, types, all tests, build — both stacks
 node scripts/evaluate-clinical.mjs   # chart-level metrics, 11 cohorts
@@ -19,6 +21,9 @@ uv run python scripts/evaluate_acoustic.py   # word error rate under noise
 uv run python scripts/calibrate_speaker.py   # re-measure speaker thresholds
 node scripts/verify-acoustic-replay.mjs      # Piper stimuli + loudspeaker replay contract
 PERIO_FIXTURE_CAPTURE=1 npm run dev           # opt-in human/TTS fixture recorder
+uv run --extra gpu python scripts/bakeoff.py --gate   # recognizer choice on replay audio
+uv run --extra gpu python scripts/verify_live_recognizer.py --gate  # same, via /ws/asr
+uv run --extra gpu python scripts/verify_noise_rejection.py         # noise never becomes text
 
 # the acceptance ledger — 42 gates, each naming the one command that decides it
 node ~/.claude/skills/unlazy/scripts/gate-check.mjs --status GATES.md
@@ -35,6 +40,8 @@ node ~/.claude/skills/unlazy/scripts/gate-check.mjs --reverify --timeout 600 GAT
   Speech, simulator, buttons and approved confirmations all arrive here.
 - `src/components/**` — renders state. Never parses clinical language.
 - `server/**` — transport, recognition, endpointing, speaker, telemetry.
+  `config.py:service_settings()` is the only place the GPU profile is applied;
+  `cuda_runtime.py` preloads cuBLAS/cuDNN from the `gpu` extra's wheels.
 - `evaluation/**`, `scripts/evaluate-*` — the two harnesses. See `EVALUATION.md`.
 - `shared/dental-prompt.json` — one recognizer prompt, read by both stacks.
 
@@ -102,6 +109,30 @@ These each cost real debugging. They are not obvious from the code.
 - **Whisper hallucinates on sub-second audio regardless of model size** —
   `'Bye bye.'`, `'life.'`, `'You'`. Decode time is flat with utterance length
   (fixed 30 s encoder window), so you pay full price for the word "three".
+- **Prompt Whisper with example transcriptions, not a description.** Large
+  models copy the prompt's *style*: the descriptive prompt produced `pd345`,
+  `Fine.`, `Buckle`; example lines ("three four five. buccal. four no three.")
+  took `large-v3` from 66% to 94% chart exact on replay audio. Every phrasing in
+  the prompt was added to fix a replay error, so 94% is in-sample. Priming a word
+  can also *steal* others: adding "tooth" turned "correct that to three" into a
+  navigation until the exact phrase was added too.
+- **A prompted recognizer recites its prompt on noise.** Suction/scaler bursts
+  decoded as "b o p d three four five." and the prompt pulled `no_speech_prob`
+  on noise (0.09–0.29) below real speech's ceiling. Never ship a prompt change
+  without `scripts/verify_noise_rejection.py`; never drop one of the three
+  checks in `server/speech_presence.py` — each catches what the others miss.
+  Check held-out noise: a threshold that passed its calibration noise leaked on
+  the next two realizations.
+- **`uv sync` is exact and removes the `gpu` extra.** The service then falls back
+  to the CPU recognizer without an error. `npm run setup`/`npm run dev` pass
+  `--extra gpu` when `/dev/nvidia0` exists; do the same by hand.
+- **Only `create_app()` applies the GPU profile.** `Settings.from_env()` keeps the
+  CPU defaults so gates are identical with and without a GPU. A script that
+  should measure what the service runs must call `service_settings()`.
+- **The bake-off decodes whole clips; the service does not.** The endpointer,
+  partials and the decode queue sit in between. `verify_live_recognizer.py`
+  streams the same recordings over `/ws/asr` and is the number to quote for
+  live behaviour.
 - **Trace details must stay structural, not echo the event message.** Two
   UI tests broke on duplicate text when they did.
 - **Gate evidence binds the check *definition*, not the scripts a check calls.**

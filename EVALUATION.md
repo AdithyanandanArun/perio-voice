@@ -205,6 +205,92 @@ quiet/noise corpus remains the final validation dataset; TTS replay reduces the
 manual work needed to diagnose the system but does not turn synthetic evidence
 into clinical evidence.
 
+## Choosing the recognizer on replay audio
+
+Every earlier recognizer decision was made on synthesized WAV files decoded
+directly, and each overestimated real use: the grammar recognizer's 80% exact on
+synthetic phrases became 54.8% chart exact once the same kind of speech crossed a
+loudspeaker, a room and a microphone. `scripts/bakeoff.py` therefore decides on
+the replay recordings and scores each candidate by the chart it produces through
+`evaluate-clinical.mjs --transcripts`, not by word error rate, which punishes
+formatting ("three" against "3") the chart may not care about.
+
+```bash
+uv run --extra gpu python scripts/bakeoff.py --engines shipped,grammar,tiny.en
+uv run --extra gpu python scripts/bakeoff.py --rescore      # re-score saved transcripts only
+uv run --extra gpu python scripts/bakeoff.py --gate         # G43
+uv run --extra gpu python scripts/verify_live_recognizer.py --gate   # G44
+uv run --extra gpu python scripts/verify_noise_rejection.py          # G46
+```
+
+`shipped` reads the prompt from `shared/dental-prompt.json` through the same bias
+path the service uses, so the number it prints describes what runs. Measured
+immediately before this was written, on all 138 recordings:
+
+| recognizer | chart exact | false entries | decode p50 / p95 |
+| --- | ---: | ---: | ---: |
+| `large-v3` + example prompt + speech checks, CUDA fp16 | 93.3% (97/104) | 1/28 | 335 / 373 ms |
+| the same without the speech checks | 94.2% (98/104) | 1/28 | 331 / 364 ms |
+| grammar-constrained, CPU | 54.8% (57/104) | 2/28 | 415 / 617 ms |
+| `tiny.en`, CPU | 53.8% (56/104) | 3/28 | 174 / 209 ms |
+
+From earlier runs on the same recordings: unprompted `large-v3`,
+`large-v3-turbo` and `distil-large-v3` all sat at 66–67%. On `large-v3-turbo`, a
+descriptive prompt reached 73%, `hotwords` 79%, the first example prompt 79% and
+the refined one 84.6% at 235 ms median; the refined prompt on `large-v3` reached
+92–94%. Model size is not the variable here either; the prompt is.
+
+The bake-off decodes each recording whole. `scripts/verify_live_recognizer.py`
+starts the real service with no `ASR_*` overrides and streams every recording
+over `/ws/asr` in 100 ms frames, so the energy endpointer, partial decodes and
+the decode queue all act as they do for the browser. It reports how many
+recordings the endpointer split into several finals and the time from endpoint
+to final at the client, which is what the clinician waits for. A recording that
+ends in several finals is replayed as several utterances, because that is what
+the pipeline receives. Measured: 94.2% (98/104) chart exact, 1/29 false entries,
+one recording split (a sound after the speech became its own, non-charting
+final), endpoint→final 344 ms median and 420 ms at p95, streamed at twice real
+time.
+
+### Noise must not become chart text
+
+The whole-clip bake-off contains no noise-only segments, so it could not see the
+largest risk of prompting: given noise, the prompted model recites its prompt.
+Endpointed operatory bursts came back as "b o p d three four five.", "three four
+five." and, with word timings on, "next tooth.", while the prompt held Whisper's
+no-speech estimate at 0.09–0.29 on noise against at most 0.122 on speech — so no
+single threshold on it separates them. Silero VAD alone does not either: loud
+scaler whine reaches 0.88.
+
+The two fail on different inputs. Every burst that passed Silero scored at least
+0.174 on the prompted no-speech estimate. So the service requires both, plus a
+saturation check for broken captures (three uploaded "human" clips turned out to
+be constant full-scale noise that decoded as "b o p d three four five." past both
+other checks).
+
+`scripts/verify_noise_rejection.py` streams 249 bursts — six operatory sources,
+four durations, five levels, clicks and saturated captures — through a real
+session on the shipped recognizer. The thresholds were calibrated on
+realizations 1–8; the gate uses 9 and 10, because a first version checked only
+calibration noise, passed, and then leaked on the next realizations. With every
+check on, none produces text; without the Silero check, 24 do and 18 look
+clinical. The noise is synthesized: real suction, handpieces and scalers are not
+in this set.
+
+### What this does and does not establish
+
+It establishes that `large-v3` with the example prompt is the best of the
+measured candidates on this capture path, by a margin (39 points) far outside the
+one-or-two-scenario noise of a 104-scenario set, and that the live service
+reproduces the whole-clip result.
+
+It does not establish clinician performance. The recordings are one synthetic
+voice; the noise that the speech checks were tuned against is synthesized; the prompt was tuned on the same recordings it is scored on, so 94.2% is
+an optimistic in-sample figure; and the six scenarios it still fails, including
+the one false entry, are listed in `evaluation/results/bakeoff/shipped.json`
+(ignored, regenerated by the command above). A consented human corpus remains
+the validation set.
+
 ## Speaker attribution does not separate speakers
 
 Stated plainly because the previous version of this document implied otherwise.
@@ -331,6 +417,9 @@ node scripts/verify-acoustic-replay.mjs      # Piper stimuli, browser replay, is
 node scripts/evaluate-clinical.mjs --gate    # clinical metrics
 uv run python scripts/evaluate_acoustic.py --gate   # word error rate under noise
 uv run python scripts/verify_model_runtime.py       # the real model, no mocks
+uv run --extra gpu python scripts/bakeoff.py --gate            # recognizer choice, replay audio
+uv run --extra gpu python scripts/verify_live_recognizer.py --gate   # the same, through /ws/asr
+uv run --extra gpu python scripts/verify_noise_rejection.py          # noise never becomes text
 ```
 
 `GATES.md` is the full acceptance ledger; every gate names the command that

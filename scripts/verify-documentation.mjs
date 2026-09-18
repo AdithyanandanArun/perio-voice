@@ -50,6 +50,14 @@ require('README.md', readme, [
   'scripts/evaluate_acoustic.py',
   'scripts/verify-quality.mjs',
   'Automated loudspeaker fixture',
+  // The GPU recognizer: what runs, how it is enabled, what it measured.
+  'large-v3',
+  'ASR_WORD_TIMESTAMPS',
+  'uv sync --extra gpu',
+  '94.2%',
+  'one synthetic Piper voice',
+  'ASR_SPEECH_PRESENCE_THRESHOLD',
+  'recites its prompt',
   'evaluation/fixtures/dental/audio/tts-replay',
   /Piper\s+en_US-lessac-medium/,
   /not a medical device/i,
@@ -84,6 +92,9 @@ require('ARCHITECTURE.md', architecture, [
   'Noise robustness',
   'Opt-in fixture path',
   'src/speech/acousticReplay.ts',
+  'server/cuda_runtime.py',
+  'Workstation GPU',
+  'server/speech_presence.py',
   'cannot overwrite human fixture files',
 ]);
 
@@ -104,6 +115,12 @@ require('EVALUATION.md', evaluation, [
   'Model size is not the variable',
   /one\s+additional failed clip/,
   'Loudspeaker TTS replay tier',
+  '## Choosing the recognizer on replay audio',
+  'scripts/bakeoff.py --gate',
+  'scripts/verify_live_recognizer.py --gate',
+  'optimistic in-sample figure',
+  '### Noise must not become chart text',
+  'scripts/verify_noise_rejection.py',
   'audio/tts-replay/noise/<utterance-id>.wav',
   /does not establish\s+clinical performance/i,
 ]);

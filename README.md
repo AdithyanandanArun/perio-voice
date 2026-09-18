@@ -60,10 +60,14 @@ processes down on Ctrl+C.
 
 ### First model start
 
-The first start downloads the Faster-Whisper `tiny.en` artifact into the ignored
-`models/` directory. The interface shows **Loading model** during this; microphone
-capture becomes available at **Voice model ready**. Later starts reuse the local
-artifact.
+With an NVIDIA GPU visible (`/dev/nvidia0` exists), `npm run dev` installs the
+`gpu` extra (cuBLAS and cuDNN wheels) and the service runs Whisper `large-v3` on
+the card. The first start downloads the ~3 GB `large-v3` artifact into the
+ignored `models/` directory and then loads it into about 3.9 GB of video memory.
+Without a GPU it downloads `tiny.en` instead and uses the CPU stack. The
+interface shows **Loading model** during this; microphone capture becomes
+available at **Voice model ready**. Later starts reuse the local artifact.
+`GET /api/health` reports which model and device actually loaded.
 
 Allow microphone access, select **Start listening**, and say `three four five`.
 Only final results reach the chart — partial text is feedback and cannot create a
@@ -97,7 +101,58 @@ shifting later sites.
 
 ## Which recognizer, and why
 
-Measured on the 30 spoken dental phrases in
+On a machine with a usable NVIDIA GPU the service runs **Whisper `large-v3`**
+(CUDA, float16) prompted with example transcriptions from
+`shared/dental-prompt.json`. Without one it falls back to the CPU stack described
+further down.
+
+The choice was made by `scripts/bakeoff.py` on the 138 loudspeaker replay
+recordings (69 phrases, quiet and noise passes), scoring each recognizer by what
+reaches the chart through the real clinical pipeline rather than by word error
+rate:
+
+| recognizer | chart exact | false chart entries | decode p50 / p95 |
+| --- | ---: | ---: | ---: |
+| `large-v3` + example prompt + speech checks, RTX 4060 | **93.3%** (97/104) | **1/28** | 335 / 373 ms |
+| the same, streamed live over `/ws/asr` | **94.2%** (98/104) | 1/29 | endpoint→final 344 / 420 ms |
+| grammar-constrained (Vosk), CPU | 54.8% (57/104) | 2/28 | 415 / 617 ms |
+| Whisper `tiny.en`, CPU | 53.8% (56/104) | 3/28 | 174 / 209 ms |
+
+Re-measured immediately before this was written. The live row streams every
+recording through the running service in 100 ms frames, so the endpointer,
+partials and decode queue are all in the path; one extra final (a sound after the
+speech) was scored as its own utterance, hence 29. Earlier runs on the same
+recordings show where the gain comes from: size alone moved chart accuracy only
+to 66–67% (`large-v3`, `large-v3-turbo`, `distil-large-v3` unprompted); on
+`large-v3-turbo` a descriptive prompt reached 73% and an example prompt 85%, and
+the example prompt on `large-v3` 94%. Large Whisper models
+copy the *style* of their prompt as well as its vocabulary, so a prompt that
+reads like the transcripts the chart needs ("three four five. buccal. four no
+three.") primes both clinical terms and digits spelled as words. `large-v3-turbo`
+with the same prompt reached 84.6% at 235 ms median — the option if latency ever
+matters more than accuracy. Parakeet-TDT 0.6B on CPU reached 58.7%.
+
+**The prompt has a cost, and the service guards it.** Given noise, a prompted
+`large-v3` recites its prompt: endpointed suction, handpiece and scaler bursts
+came back as "b o p d three four five." — a bleeding finding and three depths —
+and the prompt also pulls Whisper's own no-speech estimate down so far that the
+old 0.6 threshold never fires. Three checks now decide whether a segment is
+speech before its text can reach the chart: saturated audio (>1% of samples at
+full scale) is refused as a capture fault; Silero VAD, which never sees the
+prompt, must hear sustained speech; and the no-speech threshold is recalibrated
+to 0.15 for the prompted model. On noise realizations the thresholds were not
+tuned on, 0 of 249 bursts produce text (`scripts/verify_noise_rejection.py`).
+They cost one scenario of 104 on the replay recordings.
+
+The replay recordings are one synthetic Piper voice through the laptop speakers
+and microphone. They exercise the real capture path, but these numbers are not
+clinician performance; see [EVALUATION.md](./EVALUATION.md).
+
+### CPU fallback
+
+Without a GPU, clinical speech goes to a grammar-constrained recognizer and
+free-form speech to Whisper `tiny.en`. That stack was chosen on the 30 synthesized
+dental phrases in
 `evaluation/fixtures/synthetic-dental/`:
 
 | engine | word error rate | exact match | ms/utterance |
@@ -130,6 +185,10 @@ Speech that fits nothing returns an unknown marker, which is far more useful tha
 a confident wrong answer.
 
 Whisper remains for free-form dictation, where an open vocabulary is the point.
+Note that on the replay recordings, which cross a real speaker, room and
+microphone, the grammar's advantage over `tiny.en` all but disappears (54.8%
+against 53.8% chart exact); the table above is why the GPU profile does not use
+it.
 
 ## Runtime endpoints
 
@@ -152,7 +211,21 @@ profiles and an explicit list of what is not built.
 
 ## Configuration
 
-The defaults are chosen for low latency on a CPU-only development machine:
+The service picks its recognizer at startup. With a usable GPU — a CUDA device
+*and* loadable cuBLAS/cuDNN — it applies the GPU profile:
+
+```bash
+ASR_DEVICE=cuda                 # auto (default) | cuda | cpu
+ASR_MODEL=large-v3
+ASR_COMPUTE_TYPE=float16
+ASR_ENGINE=whisper
+ASR_WORD_TIMESTAMPS=0           # chart accuracy was measured without them
+ASR_SPEECH_PRESENCE_THRESHOLD=0.35   # Silero speech check before decoding; 0 disables
+ASR_NO_SPEECH_THRESHOLD=0.15    # recalibrated for the prompted model (0.6 on CPU)
+```
+
+Otherwise it keeps the CPU defaults, chosen for low latency on a CPU-only
+development machine:
 
 ```bash
 ASR_ENGINE=auto                 # auto | grammar | whisper
@@ -169,6 +242,17 @@ ASR_MAX_ALTERNATIVES=4          # competing readings offered to the clinical con
 ASR_VAD_RMS_THRESHOLD=0.004     # absolute floor for speech detection
 ASR_VAD_MARGIN=3.0              # speech must exceed the tracked noise floor by this
 ```
+
+Any `ASR_*` variable set explicitly wins over the profile, so
+`ASR_DEVICE=cpu npm run dev` restores the CPU stack on a GPU machine and
+`ASR_MODEL=large-v3-turbo` trades ten points of chart accuracy for ~95 ms. Only
+the service applies the profile; scripts and gates read `Settings.from_env()`,
+which keeps the CPU defaults so they behave the same with or without a GPU.
+
+Word timings are off on the GPU because the chart accuracy was measured without
+them. They cost ~45 ms median and ~110 ms at p95, and the acoustic-confidence
+signal they feed into relevance has never been calibrated against `large-v3`'s
+word probabilities.
 
 Speech detection is relative to the room. A fixed threshold has to be chosen for
 one microphone at one distance, and measured on real speech the quietest tenth of
@@ -298,6 +382,11 @@ node scripts/verify-acoustic-replay.mjs
   enforcement is on but the microphone is picking up someone else.
 - **Enrolment keeps failing:** it needs a few seconds of continuous speech. Read
   a sentence aloud rather than saying one word.
+- **Health reports `cpu` on a GPU machine:** check that `/dev/nvidia0` exists,
+  that `uv sync --extra gpu` has been run (a plain `uv sync` removes the CUDA
+  wheels; `npm run dev` re-adds them), and that `ASR_DEVICE` is not set to `cpu`.
+  The service falls back to the CPU rather than fail when cuBLAS or cuDNN will
+  not load.
 - **CPU decoding is slow:** keep `tiny.en`, CPU and INT8. Close other heavy
   workloads before evaluating latency.
 - **Ports already in use:** stop the process using 5173 or 8000; the development
