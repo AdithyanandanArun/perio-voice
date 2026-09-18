@@ -57,6 +57,12 @@ class DecodeRequest:
     # Offsets relative to the beginning of this utterance, including pre-roll.
     last_voice_offset_samples: int = 0
     endpoint_offset_samples: int = 0
+    # How the segmenter actually finished this utterance: "semantic" (short
+    # hangover after a grammar semantic-complete hint), "silence" (ordinary
+    # trailing-silence window), "max_length" (max_utterance_ms cut) or "stop"
+    # (client stop()/flush()). Set once by the segmenter, never inferred
+    # downstream, so the endpoint and final for one utterance always agree.
+    endpoint_reason: str = "silence"
 
     @property
     def audio_ms(self) -> int:
@@ -190,10 +196,13 @@ class SpeechSegmenter:
         silence_ms = self._silence_samples / self.settings.sample_rate * 1_000
         since_partial_ms = self._since_partial_samples / self.settings.sample_rate * 1_000
         if utterance_ms >= self.settings.max_utterance_ms:
-            events.append(self._finish(received_at_ms))
+            # The cap fires regardless of a semantic hint, so it is reported as
+            # its own reason rather than being folded into "semantic".
+            events.append(self._finish(received_at_ms, reason="max_length"))
         elif silence_ms >= self._effective_end_silence_ms:
             if voiced_ms >= self.settings.min_speech_ms:
-                events.append(self._finish(received_at_ms))
+                reason = "semantic" if self._semantic_complete_hint else "silence"
+                events.append(self._finish(received_at_ms, reason=reason))
             else:
                 self._reset()
         elif (
@@ -219,6 +228,21 @@ class SpeechSegmenter:
     def stream_samples(self) -> int:
         """Number of PCM samples consumed, including pre-roll and silence."""
         return self._stream_samples
+
+    def reset_for_gap(self, end_sample: int) -> None:
+        """Drop all buffered audio after an ordered capture gap.
+
+        A dropped range is not silence.  Keeping the pre-roll or active chunks
+        would let the next PCM frame join two physically disjoint recordings,
+        which can create a plausible but unsafe terminal transcript.  The
+        sample clock is advanced to the first sample after the missing range so
+        subsequent timing remains useful without pretending that the gap was
+        decoded.
+        """
+        if not isinstance(end_sample, int) or isinstance(end_sample, bool) or end_sample < 0:
+            raise ValueError("Audio gap end sample must be a non-negative integer.")
+        self._reset()
+        self._stream_samples = end_sample
 
     @property
     def _effective_end_silence_ms(self) -> int:
@@ -272,7 +296,10 @@ class SpeechSegmenter:
             self._reset()
             return None
         voiced_ms = self._voiced_samples / self.settings.sample_rate * 1_000
-        request = self._finish(received_at_ms)
+        # A client stop() always reports "stop", even if a semantic hint had
+        # already latched: the utterance did not finish on its own hangover,
+        # it was cut short by the caller.
+        request = self._finish(received_at_ms, reason="stop")
         return request if voiced_ms >= self.settings.min_speech_ms else None
 
     def _remember_pre_roll(
@@ -285,7 +312,13 @@ class SpeechSegmenter:
             removed, _, _ = self._pre_roll.popleft()
             self._pre_roll_samples -= len(removed)
 
-    def _snapshot(self, kind: DecodeKind, ended_at_ms: float) -> DecodeRequest:
+    def _snapshot(
+        self,
+        kind: DecodeKind,
+        ended_at_ms: float,
+        *,
+        reason: str = "silence",
+    ) -> DecodeRequest:
         return DecodeRequest(
             utterance_id=self._utterance_id,
             kind=kind,
@@ -298,10 +331,11 @@ class SpeechSegmenter:
             last_voice_sample=self._last_voice_sample,
             last_voice_offset_samples=max(0, self._last_voice_sample - self._start_sample),
             endpoint_offset_samples=max(0, self._stream_samples - self._start_sample),
+            endpoint_reason=reason,
         )
 
-    def _finish(self, ended_at_ms: float) -> DecodeRequest:
-        request = self._snapshot(DecodeKind.FINAL, ended_at_ms)
+    def _finish(self, ended_at_ms: float, *, reason: str = "silence") -> DecodeRequest:
+        request = self._snapshot(DecodeKind.FINAL, ended_at_ms, reason=reason)
         self._reset()
         return request
 

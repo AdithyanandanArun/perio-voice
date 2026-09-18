@@ -89,6 +89,16 @@ interface WorkletAudioMessage {
   endSample?: number;
 }
 
+interface AudioGap {
+  startSample: number;
+  endSample: number;
+}
+
+interface ExpectationDeclaration {
+  expect: ClinicalExpectation;
+  contextVersion: number | null;
+}
+
 const AUDIO_LEVEL_INTERVAL_MS = 80;
 let fallbackIdentity = 0;
 
@@ -105,6 +115,15 @@ function stableIdentity(prefix: string): string {
 
 function finiteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function currentContextVersion(contextVersion: (() => number) | undefined): number | null {
+  try {
+    const value = finiteNumber(contextVersion?.());
+    return value === null || value < 0 ? null : Math.floor(value);
+  } catch {
+    return null;
+  }
 }
 
 function messageUtteranceId(message: AsrServerMessage): number | null {
@@ -167,12 +186,16 @@ export function useLocalAsr({
   const observedVersionRef = useRef<number | null>(null);
   const streamIdRef = useRef<string | null>(null);
   const utteranceIdRef = useRef<number | null>(null);
+  const utteranceCounterRef = useRef(0);
   const transactionIdRef = useRef<string | null>(null);
   const revisionRef = useRef(0);
   const sampleCursorRef = useRef(0);
-  const audioGapRef = useRef<{ startSample: number; endSample: number } | null>(null);
+  const audioGapsRef = useRef<AudioGap[]>([]);
   const streamStartedRef = useRef(false);
+  const transportReadyRef = useRef(false);
   const contextVersionRef = useRef(contextVersion);
+  const desiredExpectationRef = useRef<ClinicalExpectation | null>(null);
+  const declaredExpectationRef = useRef<ExpectationDeclaration | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptRef = useRef(0);
   const connectRef = useRef<() => void>(() => undefined);
@@ -242,62 +265,164 @@ export function useLocalAsr({
     }
   }, [resetAudioLevel]);
 
+  const expectationDeclaration = useCallback((): ExpectationDeclaration | null => {
+    const expectation = desiredExpectationRef.current;
+    return expectation === null
+      ? null
+      : { expect: expectation, contextVersion: currentContextVersion(contextVersionRef.current) };
+  }, []);
+
   const startControl = useCallback(() => {
     const current = streamIdRef.current ?? stableIdentity('stream');
     streamIdRef.current = current;
     setStreamId(current);
-    return JSON.stringify({ type: 'start', streamId: current });
-  }, []);
+    const declaration = expectationDeclaration();
+    const control: {
+      type: 'start';
+      streamId: string;
+      expect?: ClinicalExpectation;
+      contextVersion?: number;
+    } = { type: 'start', streamId: current };
+    if (declaration?.expect !== undefined) control.expect = declaration.expect;
+    if (declaration?.contextVersion !== null && declaration?.contextVersion !== undefined) {
+      control.contextVersion = declaration.contextVersion;
+    }
+    return JSON.stringify(control);
+  }, [expectationDeclaration]);
 
   const sendStartControl = useCallback((socket: WebSocket) => {
+    if (socket.readyState !== WebSocket.OPEN) return;
     socket.send(startControl());
     streamStartedRef.current = true;
-  }, [startControl]);
+    // The server's listening acknowledgement is the barrier before PCM.
+    transportReadyRef.current = false;
+    const declaration = expectationDeclaration();
+    if (declaration) declaredExpectationRef.current = declaration;
+  }, [expectationDeclaration, startControl]);
 
-  const flushAudioGapControl = useCallback((socket: WebSocket | null) => {
-    const gap = audioGapRef.current;
-    audioGapRef.current = null;
-    if (!gap || socket?.readyState !== WebSocket.OPEN) return;
+  const utf8ByteLength = useCallback((value: string): number => {
+    if (typeof TextEncoder === 'function') return new TextEncoder().encode(value).byteLength;
+    return value.length;
+  }, []);
+
+  const recordAudioGap = useCallback((startSample: number, endSample: number) => {
+    const start = Math.max(0, Math.floor(startSample));
+    const end = Math.max(start, Math.floor(endSample));
+    if (end <= start) return;
+    const next: AudioGap = { startSample: start, endSample: end };
+    const merged: AudioGap[] = [];
+    let inserted = false;
+    for (const existing of audioGapsRef.current) {
+      if (existing.endSample < next.startSample) {
+        merged.push(existing);
+        continue;
+      }
+      if (next.endSample < existing.startSample) {
+        if (!inserted) {
+          merged.push(next);
+          inserted = true;
+        }
+        merged.push(existing);
+        continue;
+      }
+      // Equality is intentional: adjacent skipped ranges form one ordered
+      // gap, while a sent frame flushes the pending list before the next gap.
+      next.startSample = Math.min(next.startSample, existing.startSample);
+      next.endSample = Math.max(next.endSample, existing.endSample);
+    }
+    if (!inserted) merged.push(next);
+    audioGapsRef.current = merged;
+  }, []);
+
+  const flushAudioGapControl = useCallback((
+    socket: WebSocket | null,
+    followingAudioBytes = 0,
+    force = false,
+  ): boolean => {
+    const gaps = audioGapsRef.current;
+    if (gaps.length === 0) return true;
+    if (socket?.readyState !== WebSocket.OPEN) return false;
     const streamId = streamIdRef.current ?? stableIdentity('stream');
     streamIdRef.current = streamId;
-    socket.send(JSON.stringify(createAudioGapControl(
+    const controls = gaps.map((gap) => JSON.stringify(createAudioGapControl(
       streamId,
       gap.startSample,
       gap.endSample,
     )));
-  }, []);
+    const controlBytes = controls.reduce((total, control) => total + utf8ByteLength(control), 0);
+    const buffered = typeof socket.bufferedAmount === 'number' ? socket.bufferedAmount : 0;
+    // A stop is allowed to report the final gap even when older bytes are
+    // still draining. For recovery, keep the native queue bounded and defer
+    // both controls and PCM until one ordered send fits.
+    if (!force && buffered + controlBytes + followingAudioBytes > MAX_BUFFERED_AUDIO_BYTES) {
+      return false;
+    }
+    try {
+      for (const control of controls) socket.send(control);
+    } catch {
+      return false;
+    }
+    audioGapsRef.current = [];
+    return true;
+  }, [utf8ByteLength]);
 
   const sendAudioFrame = useCallback((frame: WorkletAudioMessage) => {
     const frameSamples = Math.max(0, Math.floor(frame.pcm.byteLength / Int16Array.BYTES_PER_ELEMENT));
+    const previousCursor = sampleCursorRef.current;
     const suppliedStart = finiteNumber(frame.startSample);
-    const frameStart = Math.max(0, suppliedStart ?? sampleCursorRef.current);
+    const frameStart = Math.max(0, suppliedStart ?? previousCursor);
     const suppliedEnd = finiteNumber(frame.endSample);
     const frameEnd = Math.max(frameStart, suppliedEnd ?? frameStart + frameSamples);
-    sampleCursorRef.current = Math.max(sampleCursorRef.current, frameEnd);
+    if (desiredListeningRef.current && suppliedStart !== null && suppliedStart > previousCursor) {
+      recordAudioGap(previousCursor, suppliedStart);
+    }
+    sampleCursorRef.current = Math.max(previousCursor, frameEnd);
 
+    if (!desiredListeningRef.current) return;
     const socket = socketRef.current;
-    if (!desiredListeningRef.current || !streamStartedRef.current
-        || socket?.readyState !== WebSocket.OPEN) return;
-
-    const buffered = socket.bufferedAmount;
-    const canSend = typeof buffered !== 'number'
-      || buffered + frame.pcm.byteLength <= MAX_BUFFERED_AUDIO_BYTES;
-    if (!canSend) {
-      // Keep the page bounded. The skipped samples are represented by one
-      // ordered audio_gap marker before the first PCM frame after recovery.
-      const gap = audioGapRef.current;
-      if (gap) {
-        gap.startSample = Math.min(gap.startSample, frameStart);
-        gap.endSample = Math.max(gap.endSample, frameEnd);
-      } else {
-        audioGapRef.current = { startSample: frameStart, endSample: frameEnd };
-      }
+    const transportAvailable = streamStartedRef.current && transportReadyRef.current;
+    if (!transportAvailable || socket?.readyState !== WebSocket.OPEN) {
+      recordAudioGap(frameStart, frameEnd);
       return;
     }
 
-    if (audioGapRef.current) flushAudioGapControl(socket);
-    socket.send(frame.pcm);
-  }, [flushAudioGapControl]);
+    const buffered = typeof socket.bufferedAmount === 'number' ? socket.bufferedAmount : 0;
+    if (buffered + frame.pcm.byteLength > MAX_BUFFERED_AUDIO_BYTES) {
+      recordAudioGap(frameStart, frameEnd);
+      return;
+    }
+
+    if (!flushAudioGapControl(socket, frame.pcm.byteLength)) {
+      recordAudioGap(frameStart, frameEnd);
+      return;
+    }
+    try {
+      socket.send(frame.pcm);
+    } catch {
+      recordAudioGap(frameStart, frameEnd);
+    }
+  }, [flushAudioGapControl, recordAudioGap]);
+
+  const sendContextControl = useCallback((socket: WebSocket | null, force = false): boolean => {
+    const declaration = expectationDeclaration();
+    if (!declaration || socket?.readyState !== WebSocket.OPEN) return false;
+    const previous = declaredExpectationRef.current;
+    if (!force && previous?.expect === declaration.expect
+        && previous.contextVersion === declaration.contextVersion) return true;
+    const control: {
+      type: 'context';
+      expect: ClinicalExpectation;
+      contextVersion?: number;
+    } = { type: 'context', expect: declaration.expect };
+    if (declaration.contextVersion !== null) control.contextVersion = declaration.contextVersion;
+    try {
+      socket.send(JSON.stringify(control));
+    } catch {
+      return false;
+    }
+    declaredExpectationRef.current = declaration;
+    return true;
+  }, [expectationDeclaration]);
 
   const handleServerMessage = useCallback((message: AsrServerMessage) => {
     if (message.model && message.device && message.computeType) {
@@ -311,11 +436,19 @@ export function useLocalAsr({
         setStreamId(incomingStreamId);
       }
       const incomingUtteranceId = messageUtteranceId(incoming);
-      if (incomingUtteranceId !== null) utteranceIdRef.current = incomingUtteranceId;
+      if (incomingUtteranceId !== null) {
+        utteranceIdRef.current = Math.floor(incomingUtteranceId);
+        utteranceCounterRef.current = Math.max(utteranceCounterRef.current, utteranceIdRef.current);
+      } else if (utteranceIdRef.current === null) {
+        // Older services did not attach utterance ids. Keep a deterministic
+        // local sequence so all revisions of one response share an identity.
+        utteranceCounterRef.current += 1;
+        utteranceIdRef.current = utteranceCounterRef.current;
+      }
       if (speechStartedAtRef.current === null) {
         speechStartedAtRef.current = observedAt;
         observedVersionRef.current = readOriginalContextVersion(incoming)
-          ?? contextVersionRef.current?.()
+          ?? currentContextVersion(contextVersionRef.current)
           ?? null;
       }
       const sampleTiming = readSampleTiming(incoming);
@@ -323,9 +456,7 @@ export function useLocalAsr({
         speechStartSampleRef.current = sampleTiming.startSample;
       }
       const fallbackTransaction = transactionIdRef.current
-        ?? (streamIdRef.current !== null && utteranceIdRef.current !== null
-          ? `${streamIdRef.current}:${utteranceIdRef.current}`
-          : stableIdentity('transaction'));
+        ?? `${streamIdRef.current ?? 'stream-unknown'}:${utteranceIdRef.current ?? 'utterance-unknown'}`;
       transactionIdRef.current = messageTransactionId(incoming, fallbackTransaction);
       revisionRef.current = messageRevision(incoming, revisionRef.current + 1);
       const incomingContextVersion = readOriginalContextVersion(incoming);
@@ -400,12 +531,26 @@ export function useLocalAsr({
       case 'model_ready':
         setError(null);
         setStatus(desiredListeningRef.current ? 'connecting' : 'ready');
-        if (desiredListeningRef.current && socketRef.current?.readyState === WebSocket.OPEN) {
+        if (desiredListeningRef.current
+            && !streamStartedRef.current
+            && socketRef.current?.readyState === WebSocket.OPEN) {
           sendStartControl(socketRef.current);
+        } else if (socketRef.current?.readyState === WebSocket.OPEN) {
+          sendContextControl(socketRef.current);
         }
         break;
       case 'listening':
-        setStatus('listening');
+        if (desiredListeningRef.current && streamStartedRef.current) {
+          // Keep this explicit context declaration for older servers that do
+          // not inspect the additive fields on the start control.
+          const declaration = expectationDeclaration();
+          const contextReady = declaration === null
+            || sendContextControl(socketRef.current, true);
+          transportReadyRef.current = contextReady;
+          setStatus(contextReady ? 'listening' : 'connecting');
+        } else {
+          setStatus(desiredListeningRef.current ? 'connecting' : 'ready');
+        }
         break;
       case 'speech_start': {
         const observedAt = now();
@@ -413,9 +558,13 @@ export function useLocalAsr({
         speechStartedAtRef.current = observedAt;
         speechStartSampleRef.current = sampleTiming.startSample;
         observedVersionRef.current = readOriginalContextVersion(message)
-          ?? contextVersionRef.current?.()
+          ?? currentContextVersion(contextVersionRef.current)
           ?? null;
-        utteranceIdRef.current = messageUtteranceId(message);
+        const incomingUtteranceId = messageUtteranceId(message);
+        utteranceIdRef.current = incomingUtteranceId === null
+          ? (utteranceCounterRef.current += 1)
+          : Math.floor(incomingUtteranceId);
+        utteranceCounterRef.current = Math.max(utteranceCounterRef.current, utteranceIdRef.current);
         transactionIdRef.current = messageTransactionId(message, null);
         revisionRef.current = messageRevision(message, 0);
         ensureIdentity(message, observedAt);
@@ -481,16 +630,37 @@ export function useLocalAsr({
         break;
       }
       case 'stopped':
-        setStatus('ready');
+        transportReadyRef.current = false;
+        streamStartedRef.current = false;
+        setStatus(desiredListeningRef.current ? 'connecting' : 'ready');
+        break;
+      case 'context_ack':
+        // Acknowledgements are intentionally display-neutral. The desired
+        // declaration remains in refs and is re-sent on the next connection.
+        break;
+      case 'audio_gap_ack':
+      case 'gap_ack':
+        // Gap acknowledgements must never transition a healthy listener out of
+        // its current state.
+        break;
+      case 'audio_gap_error':
+      case 'gap_error':
+        setError(message.message ?? message.error ?? 'The service could not record an audio gap.');
+        setStatus(desiredListeningRef.current ? 'listening' : 'ready');
         break;
       case 'error':
-        setError(message.message ?? 'The local recognition service reported an error.');
-        setStatus(message.recoverable && desiredListeningRef.current ? 'listening' : 'error');
+        if (typeof message.code === 'string' && message.code.includes('gap')) {
+          setError(message.message ?? message.error ?? 'The service could not record an audio gap.');
+          setStatus(desiredListeningRef.current ? 'listening' : 'ready');
+        } else {
+          setError(message.message ?? 'The local recognition service reported an error.');
+          setStatus(message.recoverable && desiredListeningRef.current ? 'listening' : 'error');
+        }
         break;
       default:
         break;
     }
-  }, [sendStartControl]);
+  }, [expectationDeclaration, sendContextControl, sendStartControl]);
 
   const connect = useCallback(() => {
     if (!supported || !mountedRef.current) return;
@@ -503,6 +673,10 @@ export function useLocalAsr({
 
     setStatus('connecting');
     setError(null);
+    // A new WebSocket creates a fresh server sample clock. Any ranges already
+    // skipped while it was unavailable remain in audioGapsRef and are remapped
+    // from zero by the first resumed PCM frame.
+    sampleCursorRef.current = 0;
     const nextStreamId = stableIdentity('stream');
     streamIdRef.current = nextStreamId;
     setStreamId(nextStreamId);
@@ -511,9 +685,12 @@ export function useLocalAsr({
     socketRef.current = socket;
     socket.onopen = () => {
       reconnectAttemptRef.current = 0;
-      // The service keeps expectation per connection, so a reconnect has to
-      // re-declare it or the grammar silently reverts to the widest one.
       declaredExpectationRef.current = null;
+      transportReadyRef.current = false;
+      streamStartedRef.current = false;
+      // Keep the desired declaration while offline. It is safe to send before
+      // a start because the server treats context as connection state.
+      sendContextControl(socket);
     };
     socket.onmessage = (event: MessageEvent<string>) => {
       const message = parseServerMessage(event.data);
@@ -524,9 +701,12 @@ export function useLocalAsr({
     };
     socket.onclose = () => {
       if (socketRef.current === socket) {
-        flushAudioGapControl(socket);
         socketRef.current = null;
         streamStartedRef.current = false;
+        transportReadyRef.current = false;
+        // Each WebSocket start owns a fresh server sample clock. Keep the
+        // pending gap ledger, but make the next connection explicitly account
+        // for all samples it did not receive before its first PCM frame.
         sampleCursorRef.current = 0;
         speechStartedAtRef.current = null;
         speechStartSampleRef.current = null;
@@ -542,7 +722,7 @@ export function useLocalAsr({
       reconnectAttemptRef.current += 1;
       reconnectTimerRef.current = window.setTimeout(() => connectRef.current(), delay);
     };
-  }, [flushAudioGapControl, handleServerMessage, supported]);
+  }, [handleServerMessage, sendContextControl, supported]);
 
   useEffect(() => {
     connectRef.current = connect;
@@ -560,8 +740,9 @@ export function useLocalAsr({
     }
     desiredListeningRef.current = true;
     streamStartedRef.current = false;
+    transportReadyRef.current = false;
     sampleCursorRef.current = 0;
-    audioGapRef.current = null;
+    audioGapsRef.current = [];
     setStatus('connecting');
     setError(null);
     let pendingStream: MediaStream | null = null;
@@ -600,14 +781,13 @@ export function useLocalAsr({
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         throw new Error('the local speech service disconnected during microphone setup');
       }
-      sampleCursorRef.current = 0;
-      audioGapRef.current = null;
       sendStartControl(socket);
       setStatus('connecting');
     } catch (reason) {
       desiredListeningRef.current = false;
       streamStartedRef.current = false;
-      audioGapRef.current = null;
+      transportReadyRef.current = false;
+      audioGapsRef.current = [];
       sampleCursorRef.current = 0;
       if (pendingStream) {
         for (const track of pendingStream.getTracks()) track.stop();
@@ -623,9 +803,11 @@ export function useLocalAsr({
   const stop = useCallback(() => {
     desiredListeningRef.current = false;
     const socket = socketRef.current;
-    flushAudioGapControl(socket);
+    flushAudioGapControl(socket, 0, true);
     streamStartedRef.current = false;
+    transportReadyRef.current = false;
     sampleCursorRef.current = 0;
+    audioGapsRef.current = [];
     speechStartedAtRef.current = null;
     speechStartSampleRef.current = null;
     observedVersionRef.current = null;
@@ -641,21 +823,34 @@ export function useLocalAsr({
     });
   }, [flushAudioGapControl, releaseCapture]);
 
-  const declaredExpectationRef = useRef<ClinicalExpectation | null>(null);
-
   const declareExpectation = useCallback((expectation: ClinicalExpectation) => {
-    if (declaredExpectationRef.current === expectation) return;
+    desiredExpectationRef.current = expectation;
     const socket = socketRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
-    declaredExpectationRef.current = expectation;
-    socket.send(JSON.stringify({ type: 'context', expect: expectation }));
-  }, []);
+    sendContextControl(socket);
+  }, [sendContextControl]);
+
+  // The chart can advance its version without changing the grammar family
+  // (for example, moving to the next tooth while still expecting depths).
+  // Re-declare that version even when the expectation string is unchanged.
+  useEffect(() => {
+    if (desiredExpectationRef.current !== null) {
+      sendContextControl(socketRef.current);
+    }
+  }, [contextVersion, sendContextControl]);
 
   const retry = useCallback(() => {
     if (!supported) return;
     setError(null);
     reconnectAttemptRef.current = 0;
     if (socketRef.current?.readyState === WebSocket.OPEN) {
+      if (desiredListeningRef.current) {
+        // retry_model may leave the old session attached to this socket. Gate
+        // PCM until model_ready starts a fresh session and reset its sample
+        // clock without discarding the pending gap ledger.
+        streamStartedRef.current = false;
+        transportReadyRef.current = false;
+        sampleCursorRef.current = 0;
+      }
       socketRef.current.send(JSON.stringify({ type: 'retry_model' }));
       setStatus('loading-model');
       return;
@@ -749,7 +944,8 @@ export function useLocalAsr({
       mountedRef.current = false;
       desiredListeningRef.current = false;
       streamStartedRef.current = false;
-      audioGapRef.current = null;
+      transportReadyRef.current = false;
+      audioGapsRef.current = [];
       sampleCursorRef.current = 0;
       if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
       const socket = socketRef.current;

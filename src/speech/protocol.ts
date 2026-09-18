@@ -30,12 +30,11 @@ export const CAPTURE_CONSTRAINTS = {
 export const ASR_PROTOCOL_VERSION = 1;
 export const TARGET_SAMPLE_RATE = 16_000;
 /**
- * Live capture deliberately uses a small, fixed batch. 40 ms keeps transport
- * overhead below the 20 ms option while cutting the old 100 ms capture floor
- * by more than half. The worklet still accepts an explicit batch size for
- * offline/fixture callers and backwards-compatible tests.
+ * Live capture deliberately uses a 20 ms fixed batch. This is the capture
+ * floor users actually feel before a frame can enter the WebSocket. The
+ * worklet still accepts an explicit larger batch for offline/fixture callers.
  */
-export const LIVE_BATCH_MS = 40;
+export const LIVE_BATCH_MS = 20;
 export const LIVE_BATCH_SAMPLES = TARGET_SAMPLE_RATE * LIVE_BATCH_MS / 1_000;
 /** Non-live enrollment and fixture recordings retain the established cadence. */
 export const CAPTURE_BATCH_MS = 100;
@@ -192,6 +191,7 @@ interface SpeakerMessage {
 
 export interface AsrServerMessage {
   type: string;
+  code?: string;
   protocol?: number;
   status?: string;
   model?: string;

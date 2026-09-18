@@ -5,7 +5,7 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
     this.targetSampleRate = config.targetSampleRate ?? 16000;
     const requestedBatchMs = Number.isFinite(config.batchMs) && config.batchMs > 0
       ? config.batchMs
-      : 40;
+      : 20;
     this.batchSamples = Math.max(1, Math.round(this.targetSampleRate * requestedBatchMs / 1000));
     this.ratio = sampleRate / this.targetSampleRate;
     this.requiredSamples = Math.ceil(this.batchSamples * this.ratio) + 1;

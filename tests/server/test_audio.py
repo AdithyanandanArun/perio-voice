@@ -203,3 +203,24 @@ def test_pre_speech_semantic_hint_does_not_leak_into_next_utterance() -> None:
     for index in range(4):
         assert segmenter.feed(pcm_frame(0, 40), 120 + index * 40) == []
     assert segmenter.in_speech
+
+
+def test_audio_gap_resets_buffer_and_advances_sample_clock() -> None:
+    settings = Settings(
+        vad_rms_threshold=0.02,
+        pre_roll_ms=80,
+        min_speech_ms=40,
+        end_silence_ms=200,
+        partial_interval_ms=10_000,
+    )
+    segmenter = SpeechSegmenter(settings)
+    assert any(isinstance(event, SpeechStarted) for event in segmenter.feed(pcm_frame(0.2, 40), 40))
+    assert segmenter.in_speech
+
+    segmenter.reset_for_gap(2_000)
+    assert not segmenter.in_speech
+    assert segmenter.stream_samples == 2_000
+
+    restarted = segmenter.feed(pcm_frame(0.2, 40), 200)
+    start = next(event for event in restarted if isinstance(event, SpeechStarted))
+    assert start.start_sample == 2_000

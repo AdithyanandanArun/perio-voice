@@ -23,15 +23,17 @@ remains available when the voice service is not.
 ```text
 Browser (React)
   getUserMedia
-    → AudioWorklet (mono, resample, 16 kHz PCM16, 100 ms frames)
+    → AudioWorklet (mono, resample, 16 kHz PCM16, 40 ms live frames)
     → binary WebSocket /ws/asr
         → FastAPI connection/session boundary
         → energy VAD + pre-roll + cadence-adaptive endpointing
         → bounded latest-partial-wins decode queue
         → preprocessing profile (none | highpass | spectral)
-        → Faster-Whisper tiny.en (CPU INT8), biased with the dental prompt
+        → Faster-Whisper profile (large-v3 CUDA `int8_float16` or tiny.en CPU INT8),
+          biased with the dental prompt
         → speaker verification against the enrolled clinician
-    ← speech_start / partial / final (+ words, speaker, cadence) / error
+    ← speech_start / partial / endpoint / final (+ sample timing, words,
+      speaker, cadence) / error
   final transcript only
     → clinical intelligence pipeline (below)
     → immutable session reducer
@@ -53,7 +55,8 @@ Opt-in fixture path (development only)
 Component ownership:
 
 - `public/audio/pcm-capture-worklet.js` — capture-thread resampling, PCM16
-  conversion, 100 ms batching, transferable delivery, input level.
+  conversion, 40 ms live batching (100 ms fixture/enrollment compatibility),
+  transferable delivery, input level and ordered gap ranges.
 - `src/speech/useLocalAsr.ts` — microphone permission, socket lifecycle,
   reconnects, model states, enrolment capture, and complete resource cleanup. It
   reads the clinical context version at speech start, not at commit.
@@ -296,7 +299,7 @@ station is left behind only when the next measurement arrives, so a finding or a
 correction spoken immediately after the last depth still belongs to the tooth
 just charted.
 
-### 12. Cadence-adaptive endpointing — `server/cadence.py`
+### 12. Cadence-adaptive endpointing — `server/cadence.py`, `server/audio.py`
 
 Endpointing follows the speaker rather than the reverse. The controller reads the
 pauses the recognizer already timestamps, tracks their high percentile rather
@@ -304,6 +307,17 @@ than the mean, and moves the threshold inside a safe band. A one-word utterance
 carries no pause evidence, so it leaves the threshold alone instead of collapsing
 it toward the floor. Clipping a value mid-word costs far more than waiting another
 hundred milliseconds.
+
+The endpoint carries additive sample timing: the utterance start, endpoint
+sample, and last voiced sample at the captured 16 kHz stream clock. A distinct
+`endpoint` event precedes the corresponding `final` when the service can emit
+it. The client and evaluator use those offsets for semantic hangover
+(`endSample - lastVoiceSample`) and use event-arrival ordering for
+endpoint→final queue/decode/transport latency. Wall-clock `endedAtMs` remains a
+compatibility fallback for ordinary reports, but it cannot satisfy the strict
+latency gate by itself. An explicit semantic-complete hint selects a bounded
+160 ms hangover inside the 120–200 ms safety band; missing or stale hints do not
+shorten ordinary cadence-adaptive endpointing.
 
 ### 13. Noise robustness — `server/denoise.py`, `evaluation/noise.py`
 
@@ -330,8 +344,11 @@ Client controls:
 ```
 
 Binary payloads are little-endian signed PCM16, mono, 16,000 Hz. Frames are
-normally 3,200 bytes (100 ms), but the server validates framing rather than
-assuming one packet size.
+normally 1,280 bytes (40 ms) for live capture; fixture/enrollment callers may
+still use 3,200-byte (100 ms) frames. The server validates framing rather than
+assuming one packet size. If the browser is backpressured, an ordered
+`audio_gap` control carries the omitted sample range; the gap is never silently
+collapsed into contiguous speech.
 
 Server events:
 
@@ -339,18 +356,32 @@ Server events:
 - `model_status` / `model_ready` — lifecycle, model name, device, compute type,
   sample rate, safe error text.
 - `listening` — the session can accept binary frames.
-- `speech_start` — utterance id and server monotonic start time.
+- `speech_start` — utterance id, server monotonic start time, and (when
+  available) stream sample start.
 - `partial` — replaceable hypothesis, audio/decode duration, dropped-partial
-  count.
+-  count and additive sample timing; partials never commit.
+- `endpoint` (also accepted as `speech_end`) — the endpoint boundary before a
+  final, including utterance id and captured `startSample`, `endSample`,
+  `lastVoiceSample`, `sampleRate`/offsets, and endpoint lifecycle/path fields.
+  `endSample - lastVoiceSample` is the semantic endpoint hangover.
+  `endpointReason` is one of `semantic` (a short 120–200 ms hangover after a
+  grammar semantic-complete hint), `silence` (the ordinary trailing-silence
+  window), `max_length` or `stop` (a client-flushed stream); the `endpoint`
+  and `final` of one utterance carry the same reason.
 - `final` — commit-eligible transcript, word timestamps, audio/decode duration,
-  utterance id, speaker verdict (when a clinician is enrolled) and the cadence
-  state that resulted.
+  utterance id, additive sample timing and endpoint identity (including
+  `endpointReason` and `lastVoiceSample`), speaker verdict (when a clinician
+  is enrolled) and the cadence state that resulted.
 - `stopped` — stream drain complete.
 - `error` — stable code, readable message, `recoverable` flag.
 
-`speaker` and `cadence` are additive fields on `final`; a client that ignores
-them still works, which is why this stays version 1. Breaking audio or event
-semantics require version 2 and an explicit browser compatibility check.
+`endpoint`, sample timing, `speaker`, `cadence`, lifecycle, transaction and
+recognition-path fields are additive fields. A client that ignores them still
+works, which is why this stays version 1. Breaking audio or event semantics
+require version 2 and an explicit browser compatibility check. An old server
+without endpoint/sample events remains usable for ordinary reporting, but the
+tightened latency gate fails closed rather than treating `endedAtMs` as proof of
+the complete critical path.
 
 ## State and commit rules
 
@@ -370,18 +401,40 @@ boundary is what prevents unstable hypotheses from duplicating values.
 
 ## Latency budget
 
-Measured from speech onset to structured chart paint on the reference CPU:
+The live gate measures the critical path as separate captured-sample and
+wall-clock segments. It does not add a medical or clinical service-level claim.
+The current replay reference before the endpoint protocol tightening was 298 ms
+median / 338 ms p95 endpoint→final; an earlier published run was 344 / 420 ms.
+The gate keeps a small hardware allowance around those observations.
+The sourced CareStack comparison and its non-claims live in
+[docs/CARESTACK_LATENCY_GAP_ANALYSIS.md](./docs/CARESTACK_LATENCY_GAP_ANALYSIS.md).
 
 | Stage | Target | Enforcement/measurement |
 | --- | ---: | --- |
-| Capture batch | 100 ms | AudioWorklet `batchMs` |
+| Capture batch | 40 ms live (100 ms compatibility callers) | AudioWorklet `batchMs`; `LIVE_BATCH_MS` |
 | Browser + loopback transport | p95 < 30 ms | client send and server receipt telemetry |
 | Partial cadence | 700 ms | `ASR_PARTIAL_INTERVAL_MS` |
-| End-of-speech silence | 300–1100 ms, adaptive | `server/cadence.py`, reported on every final |
+| Ordinary end-of-speech silence | 300–1100 ms, adaptive | `server/cadence.py`, reported on every final |
+| Semantic hangover (`endpointReason == "semantic"` finals only) | ≤200 ms (strict maximum) | endpoint `lastVoiceSample`/`endSample`; `verify_latency_quality.py` |
 | Tiny.en CPU INT8 final decode | p95 < 700 ms after endpoint | `decodeMs`; hardware dependent |
-| large-v3 CUDA FP16 final decode | p95 < 700 ms after endpoint; measured 373 ms decode, 420 ms endpoint→final live (RTX 4060) | `decodeMs`; G43, and endpoint→final at the client in G44 |
+| large-v3 CUDA `int8_float16` endpoint→final (all text finals) | p95 ≤450 ms in the tightened replay gate; fresh pre-fix reference 298 / 338 ms p50/p95 | `endpoint` arrival → `final` arrival; `verify_live_recognizer.py`, `verify_latency_quality.py` |
+| Last voiced sample→final, `endpointReason == "semantic"` finals only | p95 ≤650 ms (450 + 200 composition) | endpoint→final + captured semantic hangover |
+| Last voiced sample→final, `endpointReason == "silence"` finals | reported (p50/p95), not gated | same evidence; a correct outcome, not a slow path |
+| Semantic-reason coverage of chartable text finals | ≥80% (strict gate) | `finalsWithReason == "semantic"` / chartable text finals; `verify_latency_quality.py` |
 | Clinical pipeline | p95 < 10 ms | `parserSamples`; gated in `tests/pipeline.test.ts` and the clinical harness |
 | Speech onset → chart commit | median < 1.2 s, p95 < 2.0 s | session latency panel and evaluation harness |
+
+`verify_live_recognizer.py --gate` and `verify_latency_quality.py --gate` are
+two distinct gates over the same live run, not two names for one gate.
+`verify_live_recognizer.py --gate` decides only project gate G44 (`GATES.md`):
+≥90% chart exact, ≤2 false entries, ≤3 split recordings, endpoint→final p95
+≤700 ms, on `large-v3`/`cuda`; it always writes the full `liveTiming` evidence
+above (including `endpointReason`/`lastVoiceSample`) even when only G44 is
+checked. `verify_latency_quality.py --gate` re-runs that evaluator and applies
+the tighter 98/104 chart / 450 ms / 200 ms / 650 ms / 80% contract on top of
+G44's numbers, so a report can pass G44 while failing the strict gate. Both
+are replay/prototype budgets on one synthetic voice, not clinical
+performance claims.
 
 Endpoint silence dominates perceived delay, which is why it adapts. On a GPU
 `large-v3` decodes a final in ~330 ms median with beam 5, faster than the CPU
@@ -479,7 +532,7 @@ validation.
 
 | Profile | Model/device | Use |
 | --- | --- | --- |
-| Workstation GPU | `large-v3`, CUDA FP16, example prompt, Whisper only, speech checks | Default whenever a CUDA device and cuBLAS/cuDNN are usable; ~3.9 GB VRAM |
+| Workstation GPU | `large-v3`, CUDA `int8_float16`, example prompt, Whisper only, speech checks | Default whenever a CUDA device and cuBLAS/cuDNN are usable; ~3.9 GB VRAM |
 | Reference CPU | grammar + `tiny.en`, CPU, INT8, routed | Default without a GPU, and with `ASR_DEVICE=cpu` |
 | Lower-latency GPU | `ASR_MODEL=large-v3-turbo` | ~95 ms faster median, ~10 points lower chart accuracy on replay |
 | Packaged clinic | pinned local artifact, no runtime download | Required direction for privacy-controlled deployment |

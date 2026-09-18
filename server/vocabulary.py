@@ -295,3 +295,140 @@ def declared_vocabulary() -> frozenset[str]:
     missing word is a failure rather than a silent omission.
     """
     return frozenset(every_word() | KNOWN_LEXICON_GAPS)
+
+
+"""Structural completeness.
+
+Vosk's own endpointer (``AcceptWaveform``) needs ~500 ms of trailing silence
+before it will call a phrase final, which is exactly the fast path's target
+budget. The hint therefore cannot wait for Vosk's opinion about completeness;
+it has to form its own, from the clinical shape of the partial text alone --
+no acoustic confidence, no timing, just "does this stream of words already
+name a complete clinical unit for what the server is expecting."
+
+This is deliberately narrow and deterministic. A wrong "complete" here can
+only ever *shorten a silence window*, never write a value (the terminal
+Whisper decode is still what reaches the chart), but a wrong one still risks
+cutting a slow speaker off mid-phrase, so every rule below is a positive
+enumeration of what is unambiguously finished, not a guess about what usually
+is.
+"""
+
+NUMBER_WORDS: Final[frozenset[str]] = frozenset({*DIGITS, *TEENS_AND_TENS})
+
+"""Findings that name a whole-tooth grade rather than a plain presence/absence.
+
+`furcation` is a real graded finding (see `src/domain/types.ts`
+`GRADED_FINDINGS`) but is a known lexicon gap and never appears in a grammar,
+so it is intentionally absent here -- the grammar can never emit it."""
+GRADED_FINDING_WORDS: Final[frozenset[str]] = frozenset({"mobility"})
+
+"""Cues that negate a finding outright, matching the single-word negation
+cues `src/domain/negation.ts` treats as `SINGLE_CUES` and that this product's
+grammar actually contains. A negated graded finding still charts (grade 0),
+so it does not need an explicit grade word to be structurally complete."""
+FINDING_NEGATION_WORDS: Final[frozenset[str]] = frozenset(
+    {"no", "not", "without", "none", "negative"}
+)
+
+"""Commands that are already a whole clinical instruction on their own."""
+STANDALONE_COMMAND_WORDS: Final[frozenset[str]] = frozenset(
+    {
+        "next",
+        "back",
+        "previous",
+        "skip",
+        "missing",
+        "resume",
+        "continue",
+        "undo",
+        "redo",
+        "clear",
+        "reset",
+        "confirm",
+        "repeat",
+        "again",
+    }
+)
+
+"""Commands that are only a whole phrase together with a partner word.
+
+`scratch`/`strike` need the object they strike ("that"); `start`/`move` need
+the adverb that gives them a command meaning at all -- "start" alone is as
+likely to begin a sentence as to invoke "start over"."""
+COMMAND_PHRASES: Final[tuple[tuple[str, str], ...]] = (
+    ("start", "over"),
+    ("move", "on"),
+    ("go", "back"),
+    ("scratch", "that"),
+    ("strike", "that"),
+)
+
+
+def _is_complete_depths(tokens: frozenset[str], counts: dict[str, int]) -> bool:
+    """A depths/clinical station is complete with exactly its three sites."""
+    values = sum(count for word, count in counts.items() if word in NUMBER_WORDS)
+    return values == 3
+
+
+def _is_complete_tooth(tokens: frozenset[str], counts: dict[str, int]) -> bool:
+    """A tooth navigation needs the anchor word and a tooth number."""
+    return "tooth" in tokens and bool(tokens & NUMBER_WORDS)
+
+
+def _is_complete_finding(tokens: frozenset[str], counts: dict[str, int]) -> bool:
+    """A finding is complete on its own; a graded one also needs its grade."""
+    findings = tokens & frozenset(FINDING_WORDS)
+    if not findings:
+        return False
+    if not (findings & GRADED_FINDING_WORDS):
+        return True
+    negated = bool(tokens & FINDING_NEGATION_WORDS)
+    graded = bool(tokens & NUMBER_WORDS)
+    return negated or graded
+
+
+def _is_complete_command(tokens: frozenset[str], counts: dict[str, int]) -> bool:
+    """A command is complete standing alone or as one of the fixed phrases."""
+    if tokens & STANDALONE_COMMAND_WORDS:
+        return True
+    return any(first in tokens and second in tokens for first, second in COMMAND_PHRASES)
+
+
+_COMPLETENESS_CHECKS: Final = {
+    Expectation.DEPTHS: (_is_complete_depths,),
+    Expectation.TOOTH: (_is_complete_tooth,),
+    Expectation.FINDINGS: (_is_complete_finding,),
+    Expectation.COMMANDS: (_is_complete_command,),
+    Expectation.CLINICAL: (
+        _is_complete_depths,
+        _is_complete_tooth,
+        _is_complete_finding,
+        _is_complete_command,
+    ),
+}
+
+
+def is_structurally_complete(text: str, expectation: Expectation) -> bool:
+    """Whether a single grammar partial already names a complete clinical unit.
+
+    This says nothing about *stability* -- a caller latching the fast
+    endpoint hint must additionally require the same complete text on at
+    least two consecutive grammar feeds, because a still-changing partial
+    ("three", then "three four", then "three four five") must not fire on
+    its first, incomplete-looking, stop.
+
+    ``FREE`` never completes: it means the grammar could not represent the
+    context at all, so nothing here can be considered clinically whole.
+    """
+    if not text or expectation is Expectation.FREE:
+        return False
+    words = text.split()
+    if UNKNOWN_TOKEN in words:
+        return False
+    tokens = frozenset(words)
+    counts: dict[str, int] = {}
+    for word in words:
+        counts[word] = counts.get(word, 0) + 1
+    checks = _COMPLETENESS_CHECKS.get(expectation, ())
+    return any(check(tokens, counts) for check in checks)

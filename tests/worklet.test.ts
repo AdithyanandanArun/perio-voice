@@ -51,7 +51,7 @@ function countingConstructor<T extends CountedTypedArrayConstructor>(
   });
 }
 
-function createWorklet(batchMs = 40) {
+function createWorklet(batchMs = 20) {
   const source = readFileSync('public/audio/pcm-capture-worklet.js', 'utf8');
   const messages: { value: WorkletMessage; transfer: ArrayBuffer[] }[] = [];
   const allocations: TypedArrayAllocations = { float32: 0, float64: 0, int16: 0 };
@@ -127,23 +127,40 @@ function captureTone(frequency: number) {
 }
 
 describe('PCM capture worklet', () => {
-  it('downsamples 48 kHz audio to one 40 ms PCM16 batch and transfers ownership', () => {
+  it('downsamples 48 kHz audio to one 20 ms PCM16 batch and transfers ownership', () => {
     const { messages, worklet } = createWorklet();
-    const input = new Float32Array(1_921).fill(0.5);
+    const input = new Float32Array(961).fill(0.5);
 
     expect(worklet.process([[input]])).toBe(true);
 
     expect(messages).toHaveLength(1);
-    expect(messages[0].value.pcm.byteLength).toBe(1_280);
+    expect(messages[0].value.pcm.byteLength).toBe(640);
     const pcm = new Int16Array(messages[0].value.pcm);
-    expect(pcm).toHaveLength(640);
+    expect(pcm).toHaveLength(320);
     expect(messages[0].value.level).toBeCloseTo(pcmRms(pcm), 4);
     expect(messages[0].value.level).toBeGreaterThan(0.49);
     expect(messages[0].transfer).toEqual([messages[0].value.pcm]);
     expect(messages[0].value.sampleRate).toBe(TARGET_SAMPLE_RATE);
     expect(messages[0].value.startSample).toBe(0);
-    expect(messages[0].value.endSample).toBe(640);
+    expect(messages[0].value.endSample).toBe(320);
     expect(pcm.at(-1)).toBeCloseTo(16_384, -1);
+  });
+
+  it('measures the first live frame at a 20 ms capture floor', () => {
+    const { messages, worklet } = createWorklet();
+    let sourceQuanta = 0;
+    while (messages.length === 0 && sourceQuanta < 20) {
+      expect(worklet.process([[new Float32Array(RENDER_QUANTUM).fill(0.25)]])).toBe(true);
+      sourceQuanta += 1;
+    }
+
+    expect(messages.length).toBeGreaterThan(0);
+    const measuredBatchMs = messages[0].value.pcm.byteLength
+      / Int16Array.BYTES_PER_ELEMENT / TARGET_SAMPLE_RATE * 1_000;
+    const measuredInputFloorMs = sourceQuanta * RENDER_QUANTUM / SOURCE_SAMPLE_RATE * 1_000;
+    expect(measuredBatchMs).toBe(20);
+    expect(measuredInputFloorMs).toBeGreaterThanOrEqual(20);
+    expect(measuredInputFloorMs).toBeLessThan(25);
   });
 
   it('retains an explicit legacy batch size for non-live callers', () => {

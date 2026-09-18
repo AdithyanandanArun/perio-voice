@@ -132,15 +132,16 @@ rate:
 
 | recognizer | chart exact | false chart entries | decode p50 / p95 |
 | --- | ---: | ---: | ---: |
-| `large-v3` + example prompt + speech checks, RTX 4060 | **93.3%** (97/104) | **1/28** | 335 / 373 ms |
-| the same, streamed live over `/ws/asr` | **94.2%** (98/104) | 1/29 | endpoint→final 344 / 420 ms |
+| `large-v3` + example prompt + speech checks, RTX 4060 (`int8_float16`) | **93.3%** (97/104) | **1/28** | 335 / 373 ms |
+| the same, streamed live over `/ws/asr` | **94.2%** (98/104) | 1/29 | endpoint→final 298 / 338 ms (fresh pre-fix reference) |
 | grammar-constrained (Vosk), CPU | 54.8% (57/104) | 2/28 | 415 / 617 ms |
 | Whisper `tiny.en`, CPU | 53.8% (56/104) | 3/28 | 174 / 209 ms |
 
 Re-measured immediately before this was written. The live row streams every
-recording through the running service in 100 ms frames, so the endpointer,
-partials and decode queue are all in the path; one extra final (a sound after the
-speech) was scored as its own utterance, hence 29. Earlier runs on the same
+recording through the running service, so the endpointer, partials and decode
+queue are all in the path; one extra final (a sound after the speech) was scored
+as its own utterance, hence 29. The earlier published run was 344 / 420 ms
+endpoint→final; the fresh pre-fix reference is 298 / 338 ms. Earlier runs on the same
 recordings show where the gain comes from: size alone moved chart accuracy only
 to 66–67% (`large-v3`, `large-v3-turbo`, `distil-large-v3` unprompted); on
 `large-v3-turbo` a descriptive prompt reached 73% and an example prompt 85%, and
@@ -224,9 +225,18 @@ it.
   little-endian mono PCM16 audio; emits model, speech, partial, final, metrics,
   stop and error messages.
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for the pipeline design, protocol,
-latency budget, backpressure policy, observability, privacy boundary, deployment
-profiles and an explicit list of what is not built.
+The live protocol also emits an additive endpoint boundary with captured sample
+offsets. That lets the evaluator separate semantic hangover (last voiced sample
+→ endpoint) from endpoint→final queue/decode/transport latency, instead of
+blaming every wait on the recognizer. Older servers still produce an ordinary
+report from `endedAtMs`; the tightened gate rejects a report without endpoint
+and sample evidence. See [ARCHITECTURE.md](./ARCHITECTURE.md) for the pipeline
+design, protocol, latency budget, backpressure policy, observability, privacy
+boundary, deployment profiles and an explicit list of what is not built.
+The public-source CareStack workflow comparison is in
+[docs/CARESTACK_LATENCY_GAP_ANALYSIS.md](./docs/CARESTACK_LATENCY_GAP_ANALYSIS.md);
+it separates documented capability, general voice-charting risk and this
+prototype's decisions without claiming proprietary behavior.
 
 ## Configuration
 
@@ -330,6 +340,50 @@ capture and cleanup, the dental lexicon, relevance filtering, disambiguation,
 negation, corrections and undo, sequence protection, workflow position, speaker
 attribution, cadence adaptation, both evaluation harnesses, the assembled
 pipeline, the interface, telemetry and this documentation.
+
+The latency-quality controls are deterministic before they touch a model:
+
+```bash
+uv run python scripts/verify_latency_quality.py --unit
+node scripts/verify-competitive-latency.mjs
+```
+
+The GPU/live run is intentionally separate because it owns the model and VRAM:
+
+```bash
+uv run --extra gpu python scripts/verify_latency_quality.py --gate
+```
+
+It preserves at least 98/104 chart cases, at most two false entries and three
+split recordings, requires explicit endpoint/sample timing, and applies the
+tightened prototype budgets of endpoint→final p95 ≤450 ms and semantic
+last-voiced-sample→endpoint hangover ≤200 ms. These are replay acceptance
+budgets, not clinical claims.
+
+`verify_live_recognizer.py --gate` and `verify_latency_quality.py --gate` are
+two distinct gates on the same live run, not one gate under two names.
+`verify_live_recognizer.py --gate` alone decides project gate G44
+(`GATES.md`): ≥90% chart exact, ≤2 false entries, ≤3 split recordings,
+endpoint→final p95 ≤700 ms, on `large-v3`/`cuda` — it always writes the
+complete `liveTiming` evidence (including per-final `endpointReason` and
+`lastVoiceSample`) even when only G44 is being checked.
+`verify_latency_quality.py --gate` re-runs that evaluator and applies the
+tighter 98/104 / 450 ms / 200 ms / 650 ms contract above on top, so passing
+G44 does not imply passing the strict gate.
+
+Every `endpoint`/`final` message the server sends now carries an
+`endpointReason` (`semantic`, `silence`, `max_length` or `stop`) and a
+`lastVoiceSample` absolute stream offset. The endpoint→final p95 ≤450 ms
+control applies to every text final regardless of reason, but the semantic
+hangover ≤200 ms and composed last-voiced-sample→final p95 ≤650 ms controls
+apply **only** to finals whose `endpointReason` is `semantic` — conversational
+speech the grammar cannot semantically complete correctly rides out the
+ordinary silence window instead, and that is a correct outcome, not a slow
+semantic path. A further control requires `semantic`-reason finals to cover
+at least 80% of the text finals belonging to chartable recordings, so a dead
+semantic fast path fails instead of passing on an empty set; a text final
+missing `endpointReason` or `lastVoiceSample` fails the strict gate closed.
+Silence-endpoint composed latency is reported (p50/p95) but not gated.
 
 ## Evaluation
 

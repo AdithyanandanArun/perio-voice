@@ -81,6 +81,64 @@ def test_invalid_audio_and_messages_are_recoverable() -> None:
         assert socket.receive_json()["code"] == "invalid_message"
 
 
+def test_start_context_identity_and_audio_gap_controls_are_additive() -> None:
+    recognizer = FakeRecognizer()
+    settings = Settings(
+        vad_rms_threshold=0.01,
+        pre_roll_ms=0,
+        min_speech_ms=50,
+        end_silence_ms=200,
+        partial_interval_ms=100,
+    )
+    app = create_app(recognizer, settings)
+    with TestClient(app) as client, client.websocket_connect("/ws/asr") as socket:
+        socket.receive_json()
+        socket.receive_json()
+        socket.send_json({"type": "context", "expect": "depths", "contextVersion": 2})
+        assert socket.receive_json() == {
+            "type": "context_ack",
+            "expect": "depths",
+            "contextVersion": 2,
+        }
+        socket.send_json(
+            {
+                "type": "start",
+                "streamId": "api-stream",
+                "expect": "depths",
+                "contextVersion": 3,
+            }
+        )
+        assert socket.receive_json()["type"] == "listening"
+        socket.send_bytes(pcm_frame(0.2))
+        speech_start = socket.receive_json()
+        assert speech_start["streamId"] == "api-stream"
+        assert speech_start["originalContextVersion"] == 3
+        assert speech_start["transactionId"] == "api-stream:1"
+        assert speech_start["sampleRate"] == 16_000
+
+        socket.send_json(
+            {
+                "type": "audio_gap",
+                "streamId": "api-stream",
+                "sampleRate": 16_000,
+                "startSample": 1_600,
+                "endSample": 3_200,
+            }
+        )
+        assert socket.receive_json()["type"] == "audio_gap_ack"
+        socket.send_bytes(pcm_frame(0.2, milliseconds=300))
+        restarted = receive_until(socket, "speech_start")
+        assert restarted["utteranceId"] == 2
+        assert restarted["startSample"] == 3_200
+        assert restarted["transactionId"] == "api-stream:2"
+
+        socket.send_json({"type": "stop"})
+        final = receive_until(socket, "final")
+        assert final["utteranceId"] == 2
+        assert final["lifecycle"] == "confirmed"
+        assert final["recognitionPath"] == "terminal"
+
+
 def test_socket_remains_responsive_while_model_loads() -> None:
     recognizer = SlowLoadingRecognizer()
     app = create_app(recognizer, Settings())

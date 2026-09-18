@@ -32,8 +32,7 @@ async def verify() -> None:
     if recognizer.warmup.duration_ms is None:
         raise RuntimeError("Model warmup did not report a duration.")
     sweep_options = {
-        beam: recognizer.decoder_options(partial=False, beam_size=beam)
-        for beam in (1, 5)
+        beam: recognizer.decoder_options(partial=False, beam_size=beam) for beam in (1, 5)
     }
     if sweep_options[1]["beam_size"] != 1 or sweep_options[5]["beam_size"] != 5:
         raise RuntimeError("Decoder beam overrides are not exposed independently of runtime state.")

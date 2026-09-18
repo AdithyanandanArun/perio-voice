@@ -79,6 +79,12 @@ class VoskGrammarSession:
         self._closed = False
         self._final: RecognitionResult | None = None
         self._completed: list[_ParsedGrammarResult] = []
+        self._semantic_complete = False
+
+    @property
+    def semantic_complete(self) -> bool:
+        """Whether Vosk has accepted a complete phrase for this segment."""
+        return self._semantic_complete
 
     @property
     def finalized(self) -> bool:
@@ -180,6 +186,8 @@ class VoskGrammarSession:
             recognizer = self._require_open()
             started = time.perf_counter()
             completed = bool(recognizer.AcceptWaveform(pcm))
+            if completed:
+                self._semantic_complete = True
             payload = json.loads(recognizer.Result() if completed else recognizer.PartialResult())
             if not isinstance(payload, dict):
                 payload = {}
@@ -200,6 +208,7 @@ class VoskGrammarSession:
             if not isinstance(payload, dict):
                 payload = {}
             parsed = self._result(payload, partial=False, started=started)
+            self._semantic_complete = True
             self._final = self._aggregate(parsed, partial=False, started=started)
             return self._final
 

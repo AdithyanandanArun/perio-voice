@@ -220,6 +220,9 @@ uv run --extra gpu python scripts/bakeoff.py --engines shipped,grammar,tiny.en
 uv run --extra gpu python scripts/bakeoff.py --rescore      # re-score saved transcripts only
 uv run --extra gpu python scripts/bakeoff.py --gate         # G43
 uv run --extra gpu python scripts/verify_live_recognizer.py --gate   # G44
+uv run python scripts/verify_latency_quality.py --unit               # deterministic controls
+node scripts/verify-competitive-latency.mjs                          # docs/mapping contract
+uv run --extra gpu python scripts/verify_latency_quality.py --gate   # live gate + independent parse
 uv run --extra gpu python scripts/verify_noise_rejection.py          # G46
 ```
 
@@ -229,7 +232,7 @@ immediately before this was written, on all 138 recordings:
 
 | recognizer | chart exact | false entries | decode p50 / p95 |
 | --- | ---: | ---: | ---: |
-| `large-v3` + example prompt + speech checks, CUDA fp16 | 93.3% (97/104) | 1/28 | 335 / 373 ms |
+| `large-v3` + example prompt + speech checks, CUDA `int8_float16` | 93.3% (97/104) | 1/28 | 335 / 373 ms |
 | the same without the speech checks | 94.2% (98/104) | 1/28 | 331 / 364 ms |
 | grammar-constrained, CPU | 54.8% (57/104) | 2/28 | 415 / 617 ms |
 | `tiny.en`, CPU | 53.8% (56/104) | 3/28 | 174 / 209 ms |
@@ -242,15 +245,96 @@ the refined one 84.6% at 235 ms median; the refined prompt on `large-v3` reached
 
 The bake-off decodes each recording whole. `scripts/verify_live_recognizer.py`
 starts the real service with no `ASR_*` overrides and streams every recording
-over `/ws/asr` in 100 ms frames, so the energy endpointer, partial decodes and
-the decode queue all act as they do for the browser. It reports how many
-recordings the endpointer split into several finals and the time from endpoint
-to final at the client, which is what the clinician waits for. A recording that
-ends in several finals is replayed as several utterances, because that is what
-the pipeline receives. Measured: 94.2% (98/104) chart exact, 1/29 false entries,
-one recording split (a sound after the speech became its own, non-charting
-final), endpoint→final 344 ms median and 420 ms at p95, streamed at twice real
-time.
+over `/ws/asr`. Browser capture uses 40 ms live frames; this evaluator keeps
+100 ms fixture frames for compatibility while still exercising the real energy
+endpointer, partial decodes and decode queue. It reports how many recordings
+the endpointer split into several finals and measures the complete client-side
+critical path: the additive `endpoint` event, captured sample timing for the
+last voiced sample and endpoint, and endpoint→final event-arrival latency. A
+recording that ends in several finals is replayed as several utterances,
+because that is what the pipeline receives.
+
+The fresh pre-fix reference is 94.2% (98/104) chart exact, 1/29 false entries,
+one split recording (a sound after speech became its own, non-charting final),
+endpoint→final 298 ms median and 338 ms at p95, streamed at twice real time.
+The earlier published run was 344 ms median and 420 ms p95; both numbers are
+kept as context rather than blended into one result. The evaluator emits a
+`liveTiming` object with raw endpoint→final, semantic hangover and
+last-voiced-sample→final arrays so a second process can recompute the gate.
+
+This is explicit endpoint/sample timing evidence, not an inference from a
+rounded summary line.
+
+### Live critical-path contract
+
+`endpoint`/`speech_end` is an additive boundary event and must precede the
+matching non-empty `final`. Its sample evidence includes `sampleRate`,
+`startSample`, `endSample` and `lastVoiceSample` (or equivalent explicit
+offsets), plus `endpointReason` — one of `semantic` (a short 120–200 ms
+hangover after a grammar semantic-complete hint), `silence` (the ordinary
+trailing-silence window), `max_length` or `stop`. The `endpoint` and `final`
+of one utterance agree on the reason. Semantic hangover is computed from
+`endSample - lastVoiceSample`; endpoint→final is measured from client arrival
+of the boundary to client arrival of the final. A server that only sends the
+legacy wall-clock `endedAtMs` remains useful for ordinary reporting, but the
+tightened gate fails closed because that fallback cannot prove the complete
+critical path — and a text final that omits `endpointReason` or
+`lastVoiceSample` also fails the tightened gate closed.
+
+Two gates run over the same live report and decide two different claims, not
+one gate under two names:
+
+- `verify_live_recognizer.py --gate` decides only project gate G44
+  (`GATES.md`): ≥90% chart exact, ≤2 false entries, ≤3 split recordings,
+  endpoint→final p95 ≤700 ms, on `large-v3`/CUDA. It always writes the full
+  `liveTiming` evidence (`endpointReason`, `lastVoiceSample`, and the
+  coverage counts below) regardless of which gate is run.
+- `verify_latency_quality.py --gate` re-runs that evaluator and applies the
+  tightened, narrower contract below. A report can satisfy G44 while failing
+  this gate.
+
+The tightened contract's endpoint→final control covers every text final
+regardless of `endpointReason`; the semantic hangover and composed
+last-voiced-sample→final controls apply **only** to `semantic`-reason
+finals, because conversational speech the clinical grammar cannot
+semantically complete correctly is expected to ride out the ordinary
+silence window instead — that is a correct outcome, not a latency defect,
+and scoring it against the semantic budgets would fail a correct product.
+The silence-endpoint composed latency is reported (p50/p95) but not gated.
+
+The terminal replay bar is intentionally independent of latency:
+
+| Control | Tightened gate |
+| --- | ---: |
+| Chart exact match | ≥98/104 cases |
+| False chart entries | ≤2 |
+| Split recordings | ≤3 |
+| Endpoint→final (all text finals) | p95 ≤450 ms |
+| Semantic last-voiced-sample→endpoint hangover (`semantic`-reason finals only) | max ≤200 ms |
+| Last-voiced-sample→final (`semantic`-reason finals only) | p95 ≤650 ms (450 + 200 composition) |
+| Semantic-reason coverage of chartable text finals | ≥80% |
+| Missing `endpointReason` or `lastVoiceSample` on a text final | fails closed |
+| Runtime | `large-v3` on CUDA |
+
+The 80% coverage control exists so that a semantic fast path which never
+fires (an empty set of `semantic`-reason finals) fails instead of silently
+passing every other control by having nothing to measure.
+
+The 450 ms endpoint budget is a small hardware allowance around the measured
+338 ms p95 reference and the earlier 420 ms p95 report; it is not a clinical
+service-level claim. `verify_latency_quality.py --unit` exercises each passing
+boundary and failure control without a model, including 201 ms semantic
+hangover, a composed semantic p95 over 650 ms, 79% semantic coverage, a
+missing `endpointReason`, and the positive control that a long
+silence-endpoint hangover does not fail the semantic control. `--gate` runs
+the live evaluator, then parses its raw JSON arrays and independently
+recomputes chart, false, split, evidence-coverage and percentile controls
+before printing a pass marker.
+The replay is one synthetic Piper voice through a local capture path, so these
+numbers do not establish clinician performance, CareStack latency, or a medical
+claim. This is not a clinical claim.
+The source-grounded workflow comparison is maintained separately in
+[docs/CARESTACK_LATENCY_GAP_ANALYSIS.md](./docs/CARESTACK_LATENCY_GAP_ANALYSIS.md).
 
 ### Noise must not become chart text
 
@@ -435,6 +519,9 @@ uv run python scripts/evaluate_acoustic.py --gate   # word error rate under nois
 uv run python scripts/verify_model_runtime.py       # the real model, no mocks
 uv run --extra gpu python scripts/bakeoff.py --gate            # recognizer choice, replay audio
 uv run --extra gpu python scripts/verify_live_recognizer.py --gate   # the same, through /ws/asr
+uv run python scripts/verify_latency_quality.py --unit               # deterministic latency controls
+node scripts/verify-competitive-latency.mjs                          # source/mapping contract
+uv run --extra gpu python scripts/verify_latency_quality.py --gate   # live latency + quality gate
 uv run --extra gpu python scripts/verify_noise_rejection.py          # noise never becomes text
 ```
 

@@ -84,6 +84,22 @@ class RoutedRecognizer:
                 await engine.load()
             except Exception as exc:
                 errors.append(f"{type(exc).__name__}: {exc}")
+        # The GPU profile commits through Whisper, but warming the optional
+        # grammar side channel during service startup keeps its first utterance
+        # from paying a model-load penalty. A missing grammar model must not
+        # make a healthy terminal Whisper deployment unavailable.
+        if (
+            self.engine is Engine.WHISPER
+            and (
+                self.settings.device.strip().lower() == "cuda"
+                or self.settings.model_name == "large-v3"
+            )
+            and self._grammar.status is not ModelStatus.READY
+        ):
+            try:
+                await self._grammar.load()
+            except Exception:
+                pass
         self.error = "; ".join(errors) if errors else None
         if errors:
             raise RuntimeError(self.error)
@@ -152,6 +168,29 @@ class RoutedRecognizer:
             return "grammar"
         return "whisper" if self._expectation is Expectation.FREE else "grammar"
 
+    @property
+    def terminal_route(self) -> str:
+        """Return the engine allowed to produce a committing result.
+
+        The GPU profile is deliberately a Whisper terminal route.  The grammar
+        engine may still be opened as an incremental hint session, but it must
+        never silently replace the configured large-v3 decode at the commit
+        boundary.  CPU deployments retain the explicit ``ASR_ENGINE``/context
+        routing behaviour for backwards compatibility.
+        """
+        if (
+            self.engine is Engine.WHISPER
+            or self.settings.device.strip().lower() == "cuda"
+            or self.settings.model_name == "large-v3"
+        ):
+            return "whisper"
+        return self.route()
+
+    @property
+    def terminal_model(self) -> Recognizer:
+        """The recognizer used for terminal, chart-eligible results."""
+        return self._whisper if self.terminal_route == "whisper" else self._grammar
+
     async def transcribe(
         self,
         audio: FloatAudio,
@@ -159,7 +198,7 @@ class RoutedRecognizer:
         partial: bool,
         beam_size: int | None = None,
     ) -> RecognitionResult:
-        chosen = self._whisper if self.route() == "whisper" else self._grammar
+        chosen = self.terminal_model
         if beam_size is None:
             # Keep compatibility with injected recognizers used by the service
             # tests; the optional override is only needed by sweep callers.

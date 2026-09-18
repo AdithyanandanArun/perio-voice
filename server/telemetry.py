@@ -34,6 +34,14 @@ COUNTERS: Final[frozenset[str]] = frozenset(
         "finals_rejected_no_speech",
         "finals_rejected_no_speech_presence",
         "partials_skipped_no_speech_presence",
+        "endpoints_total",
+        "audio_gaps",
+        "audio_gaps_rejected",
+        "grammar_sessions_opened",
+        "grammar_sessions_closed",
+        "grammar_session_errors",
+        "grammar_partials",
+        "semantic_hints",
     }
 )
 
@@ -46,6 +54,7 @@ HISTOGRAMS: Final[frozenset[str]] = frozenset(
         "speech_ms",
         "end_silence_ms",
         "model_load_ms",
+        "audio_gap_samples",
     }
 )
 

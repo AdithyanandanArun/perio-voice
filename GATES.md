@@ -268,6 +268,16 @@ Scope: Milestone 1 delivered active local Faster-Whisper recognition and a deter
   EXPECT: AUTO_CHART_UI_GATE_PASSED
   EVIDENCE: automatic-evidence=v1; definition-sha256=6f02c144c99a81653d23a2b16182a9f84af7255c3b48a4575d453522e0957c97; exit=0; EXPECT=matched; output-sha256=a148370c783fc8e8b8a29bf1d2162e42fab9fedddf9de5131fcb7d6809b5f5d6; output-bytes=316; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=1cc423e6f446/13 entries
 
+## Milestone 8 — lower-latency recognition without losing accuracy
+
+- [ ] G50: streamed through the running service, the replay recordings keep at least 98/104 chart cases with at most 2 false entries and 3 splits, the endpoint-to-final p95 stays within 450 ms, and utterances ended by the semantic fast path (at least 80% of chartable finals) carry at most a 200 ms hangover and a last-voice-to-final p95 within 650 ms, on large-v3 on the GPU, independently recomputed from the evaluator's raw timing evidence
+  CHECK: uv run --extra gpu python scripts/verify_latency_quality.py --gate
+  EXPECT: LATENCY_QUALITY_GATE_PASSED
+
+- [ ] G51: the fast endpoint is attributable -- a semantic endpoint precedes stop and is reported as semantic, grammar text that never completes gets no short hangover, the terminal transcript stays Whisper, and an audio gap never bridges missing samples
+  CHECK: uv run python scripts/verify_fast_endpoint.py
+  EXPECT: FAST_ENDPOINT_ATTRIBUTED_GATE_PASSED
+
 ABANDON: G33 The speaker profile does not separate voices at the durations this product uses, so no threshold can satisfy this gate. Measured against a six-second enrollment: at 0.5 s the enrolled speaker scored 0.7662 while another voice scored 0.9627, an inverted margin of -0.1965; separation only appears around four seconds, and a rolling four-second window still leaves +0.0007 on clean single-speaker audio. The original +0.0507 margin was measured on 5.5 s against 5.5 s, which is not the comparison the product makes. G31 and G32 fix the two real defects (enrollment now completes from one ordinary take, short utterances now reach a decision) and both pass. Discrimination needs a trained speaker-embedding model behind the same interface; attribution stays off by default and ARCHITECTURE.md and EVALUATION.md both state that it does not work.
 
 ABANDON: G18 This gate claims voice attribution accepts the enrolled clinician and blocks other speakers, and that claim is not true: the underlying discrimination does not exist at clinical utterance lengths, for the reasons recorded against G33. Its check re-runs the same calibration G33 abandons, so keeping it would assert the impossible twice, and narrowing its check to whatever still passes would be fitting the oracle to the outcome. The parts that do work remain gated elsewhere -- enrollment by G31, short-utterance decisions by G32, and the pipeline's hold-on-unknown behaviour by tests/server/test_speaker.py and tests/pipeline.test.ts under G8. Attribution stays off by default and the documentation states it does not work.

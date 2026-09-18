@@ -240,6 +240,8 @@ def create_app(
         if resolved_recognizer.status is not ModelStatus.READY and model_task is not None:
             model_notifier = watch_model(model_task)
         session: AsrSession | None = None
+        connection_expectation = parse_expectation(None)
+        connection_context_version: int | None = None
         try:
             while True:
                 packet = await websocket.receive()
@@ -280,6 +282,57 @@ def create_app(
                     if resolved_recognizer.status is not ModelStatus.READY:
                         await send(_model_message(resolved_recognizer, resolved_settings))
                         continue
+                    stream_id = _message_stream_id(message)
+                    if "streamId" in message and stream_id is None:
+                        await send(
+                            {
+                                "type": "error",
+                                "code": "invalid_start",
+                                "recoverable": True,
+                                "message": "streamId must be a non-empty string.",
+                            }
+                        )
+                        continue
+                    if (
+                        "expect" in message
+                        and message["expect"] is not None
+                        and not isinstance(message["expect"], str)
+                    ):
+                        await send(
+                            {
+                                "type": "error",
+                                "code": "invalid_start",
+                                "recoverable": True,
+                                "message": "expect must be a string.",
+                            }
+                        )
+                        continue
+                    if "contextVersion" in message and message["contextVersion"] is None:
+                        await send(
+                            {
+                                "type": "error",
+                                "code": "invalid_start",
+                                "recoverable": True,
+                                "message": "contextVersion must be a non-negative integer.",
+                            }
+                        )
+                        continue
+                    expectation = _message_expectation(
+                        message.get("expect"), connection_expectation
+                    )
+                    context_ok, context_version = _message_context_version(
+                        message.get("contextVersion"), connection_context_version
+                    )
+                    if not context_ok:
+                        await send(
+                            {
+                                "type": "error",
+                                "code": "invalid_start",
+                                "recoverable": True,
+                                "message": "contextVersion must be a non-negative integer.",
+                            }
+                        )
+                        continue
                     if session is not None:
                         await session.close()
                     session = AsrSession(
@@ -288,7 +341,12 @@ def create_app(
                         send,
                         telemetry=telemetry,
                         speaker_gate=speaker_gate if speaker_gate.enrolled else None,
+                        stream_id=stream_id,
+                        original_context_version=context_version,
+                        expectation=expectation,
                     )
+                    connection_expectation = expectation
+                    connection_context_version = context_version
                     await session.start()
                     await send({"type": "listening"})
                 elif message_type == "stop":
@@ -299,12 +357,80 @@ def create_app(
                     else:
                         await send({"type": "stopped", "droppedPartials": 0})
                 elif message_type == "context":
-                    expectation = parse_expectation(message.get("expect"))
+                    raw_expectation = message.get("expect")
+                    if raw_expectation is not None and not isinstance(raw_expectation, str):
+                        await send(
+                            {
+                                "type": "error",
+                                "code": "invalid_context",
+                                "recoverable": True,
+                                "message": "expect must be a string.",
+                            }
+                        )
+                        continue
+                    expectation = _message_expectation(raw_expectation, connection_expectation)
+                    if "contextVersion" in message and message["contextVersion"] is None:
+                        await send(
+                            {
+                                "type": "error",
+                                "code": "invalid_context",
+                                "recoverable": True,
+                                "message": "contextVersion must be a non-negative integer.",
+                            }
+                        )
+                        continue
+                    context_ok, context_version = _message_context_version(
+                        message.get("contextVersion"), connection_context_version
+                    )
+                    if not context_ok:
+                        await send(
+                            {
+                                "type": "error",
+                                "code": "invalid_context",
+                                "recoverable": True,
+                                "message": "contextVersion must be a non-negative integer.",
+                            }
+                        )
+                        continue
+                    connection_expectation = expectation
+                    connection_context_version = context_version
                     if session is not None:
-                        session.set_expectation(expectation)
+                        session.set_expectation(expectation, context_version)
                     elif isinstance(resolved_recognizer, RoutedRecognizer):
                         resolved_recognizer.set_expectation(expectation)
-                    await send({"type": "context_ack", "expect": expectation.value})
+                    acknowledgement: dict[str, Any] = {
+                        "type": "context_ack",
+                        "expect": expectation.value,
+                    }
+                    if "contextVersion" in message:
+                        acknowledgement["contextVersion"] = context_version
+                    await send(acknowledgement)
+                elif message_type == "audio_gap":
+                    if session is None:
+                        await send(
+                            {
+                                "type": "error",
+                                "code": "stream_not_started",
+                                "recoverable": True,
+                                "message": "Send a start message before an audio gap.",
+                            }
+                        )
+                        continue
+                    try:
+                        gap = _parse_audio_gap(message)
+                        acknowledgement = await session.handle_audio_gap(**gap)
+                    except ValueError as exc:
+                        telemetry.count("invalid_audio")
+                        await send(
+                            {
+                                "type": "error",
+                                "code": "invalid_audio_gap",
+                                "recoverable": True,
+                                "message": str(exc),
+                            }
+                        )
+                    else:
+                        await send(acknowledgement)
                 elif message_type == "ping":
                     await send({"type": "pong"})
                 elif message_type == "retry_model":
@@ -326,7 +452,8 @@ def create_app(
                             "code": "invalid_message",
                             "recoverable": True,
                             "message": (
-                                "Expected a start, stop, context, ping, or retry_model message."
+                                "Expected a start, stop, context, audio_gap, ping, or "
+                                "retry_model message."
                             ),
                         }
                     )
@@ -376,6 +503,56 @@ def _parse_client_message(text: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _message_stream_id(message: dict[str, Any]) -> str | None:
+    value = message.get("streamId")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _message_expectation(value: object, fallback: Any) -> Any:
+    if value is None:
+        return fallback
+    if not isinstance(value, str):
+        return fallback
+    return parse_expectation(value)
+
+
+def _message_context_version(value: object, fallback: int | None) -> tuple[bool, int | None]:
+    if value is None:
+        return True, fallback
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return False, fallback
+    return True, value
+
+
+def _parse_audio_gap(message: dict[str, Any]) -> dict[str, Any]:
+    stream_id = _message_stream_id(message)
+    if stream_id is None:
+        raise ValueError("Audio gap streamId must be a non-empty string.")
+    sample_rate = message.get("sampleRate")
+    start_sample = message.get("startSample")
+    end_sample = message.get("endSample")
+    if (
+        isinstance(sample_rate, bool)
+        or not isinstance(sample_rate, int)
+        or isinstance(start_sample, bool)
+        or not isinstance(start_sample, int)
+        or isinstance(end_sample, bool)
+        or not isinstance(end_sample, int)
+    ):
+        raise ValueError("Audio gap sampleRate/startSample/endSample must be integers.")
+    return {
+        "stream_id": stream_id,
+        "sample_rate": sample_rate,
+        "start_sample": start_sample,
+        "end_sample": end_sample,
+    }
 
 
 def _load_fixture_ids(path: Path) -> frozenset[str]:
