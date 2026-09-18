@@ -7,8 +7,7 @@ that decides what belongs in the chart, what it means, and where it goes.
 
 **The product is not the transcription.** It is the layer between recognition and
 the record. The recognizer is replaceable; that layer is the value. Read
-`ARCHITECTURE.md` before changing anything structural, and `next.md` for what is
-planned next.
+`ARCHITECTURE.md` before changing anything structural.
 
 ## Commands
 
@@ -175,14 +174,13 @@ These each cost real debugging. They are not obvious from the code.
 
 ## Status
 
-40/42 gates met and re-verified; G18 and G33 are explicitly abandoned because
-the classical speaker profile does not separate voices at clinical utterance
-lengths. 182 frontend tests and 85 Python tests pass. Clinical evaluation remains
-86/86 exact match with 0/24 false chart entries. On the checked-in short dental
-fixture, grammar recognition is 80% exact at 0.132 WER versus Whisper at 33–40%
-exact across immediate runs. The full dental manifest can now be replayed through
-the laptop speakers automatically with the pinned Piper voice; a consented human
-quiet/noise corpus remains necessary only for real-clinic validation.
+Measured 2026-09-19: 291 frontend tests and 118 Python tests pass; the clinical
+evaluation is 86/86 exact with 0/24 false chart entries. G18 and G33 are
+abandoned (the classical speaker profile does not separate voices at clinical
+utterance lengths). The GPU gates (G43, G44, G46) and the dev-runtime gate (G6)
+need the dev server stopped to re-verify. All replay numbers are one synthetic
+voice; a consented human quiet/noise corpus remains necessary for clinical
+validation.
 
 `ARCHITECTURE.md` ends with **"What is not built"**. Read it before promising
 anything: recorded operatory audio, a real-clinician dental speech corpus, trained speaker
