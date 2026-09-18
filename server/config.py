@@ -59,6 +59,10 @@ class Settings:
     which measured about 45 ms slower at the median and 110 ms at p95 with
     large-v3, for an optional relevance signal. Off on the GPU profile."""
     word_timestamps: bool = True
+    """Segments whose highest Silero speech probability is below this are refused
+    before decoding (server/speech_presence.py). 0 disables the check. On in the
+    GPU profile, where the prompted model's no-speech estimate cannot be trusted."""
+    speech_presence_threshold: float = 0.0
     beam_size: int = 5
     engine: Engine = Engine.AUTO
     grammar_model_dir: Path = Path("models/vosk-model-en-us-0.22-lgraph")
@@ -145,6 +149,7 @@ class Settings:
             denoise_profile=parse_profile(os.getenv("ASR_DENOISE_PROFILE", "none")),
             bias_prompt=_env_bool("ASR_BIAS_PROMPT", True),
             word_timestamps=_env_bool("ASR_WORD_TIMESTAMPS", True),
+            speech_presence_threshold=_env_float("ASR_SPEECH_PRESENCE_THRESHOLD", 0.0),
             beam_size=_env_int("ASR_BEAM_SIZE", 5),
             engine=parse_engine(os.getenv("ASR_ENGINE", "auto")),
             grammar_model_dir=Path(
@@ -164,6 +169,15 @@ class Settings:
         )
 
 
+# Both measured on the replay recordings and 960 synthesized operatory bursts;
+# see server/speech_presence.py. Silero keeps 136 of 138 speech segments at 0.35.
+# The prompt pulls large-v3's no-speech estimate down on everything, so 0.6 (set
+# for tiny.en) never fires: prompted speech scored at most 0.122 and every burst
+# that passed Silero at least 0.174.
+GPU_SPEECH_PRESENCE_THRESHOLD = 0.35
+GPU_NO_SPEECH_THRESHOLD = 0.15
+
+
 def service_settings() -> Settings:
     """Settings for the running service, upgraded to the GPU profile when usable.
 
@@ -172,7 +186,9 @@ def service_settings() -> Settings:
     accuracy at 330 ms median on an RTX 4060, against 54% for tiny.en and 55% for
     the grammar recognizer. Word timings are off because that measurement was
     made without them; they cost ~45 ms and feed an acoustic-confidence signal
-    that was never calibrated against large-v3.
+    that was never calibrated against large-v3. Speech presence is judged by
+    Silero VAD, because the prompt makes large-v3 recite clinical text on noise
+    and suppresses its own no-speech estimate.
 
     Only the service does this. Scripts and tests that call Settings.from_env()
     keep the CPU defaults, so a gate behaves the same on a laptop with a GPU as
@@ -197,4 +213,14 @@ def service_settings() -> Settings:
         compute_type="float16" if unset("ASR_COMPUTE_TYPE") else settings.compute_type,
         engine=Engine.WHISPER if unset("ASR_ENGINE") else settings.engine,
         word_timestamps=False if unset("ASR_WORD_TIMESTAMPS") else settings.word_timestamps,
+        speech_presence_threshold=(
+            GPU_SPEECH_PRESENCE_THRESHOLD
+            if unset("ASR_SPEECH_PRESENCE_THRESHOLD")
+            else settings.speech_presence_threshold
+        ),
+        no_speech_threshold=(
+            GPU_NO_SPEECH_THRESHOLD
+            if unset("ASR_NO_SPEECH_THRESHOLD")
+            else settings.no_speech_threshold
+        ),
     )

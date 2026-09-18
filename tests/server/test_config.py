@@ -11,6 +11,8 @@ ASR_VARIABLES = (
     "ASR_COMPUTE_TYPE",
     "ASR_ENGINE",
     "ASR_WORD_TIMESTAMPS",
+    "ASR_SPEECH_PRESENCE_THRESHOLD",
+    "ASR_NO_SPEECH_THRESHOLD",
 )
 
 
@@ -36,6 +38,10 @@ def test_service_uses_the_measured_gpu_profile_when_a_gpu_is_usable(
     assert settings.compute_type == "float16"
     assert settings.engine is Engine.WHISPER
     assert settings.word_timestamps is False
+    # The prompted model recites clinical text on noise, so the GPU profile must
+    # never run without the independent speech check.
+    assert settings.speech_presence_threshold == 0.35
+    assert settings.no_speech_threshold == 0.15
 
 
 def test_service_falls_back_to_the_cpu_defaults_without_a_gpu(
@@ -49,6 +55,8 @@ def test_service_falls_back_to_the_cpu_defaults_without_a_gpu(
         Engine.AUTO,
     )
     assert settings.word_timestamps is True
+    assert settings.speech_presence_threshold == 0.0
+    assert settings.no_speech_threshold == 0.6
 
 
 def test_explicit_variables_win_over_the_gpu_profile(monkeypatch: pytest.MonkeyPatch) -> None:

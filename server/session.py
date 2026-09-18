@@ -14,6 +14,7 @@ from server.denoise import apply_profile
 from server.recognizer import Recognizer
 from server.routed_recognizer import RoutedRecognizer
 from server.speaker import SpeakerGate
+from server.speech_presence import assess
 from server.telemetry import Telemetry
 from server.vocabulary import Expectation
 
@@ -179,6 +180,36 @@ class AsrSession:
             )
             return
 
+        # A prompted recognizer given noise recites its prompt, so whether this
+        # is speech at all is decided here, by a model that never sees the prompt.
+        presence: float | None = None
+        if self.settings.speech_presence_threshold > 0:
+            assessment = await asyncio.to_thread(assess, request.audio)
+            presence = assessment.probability
+            if not assessment.is_speech(self.settings.speech_presence_threshold):
+                if not final:
+                    self.telemetry.count("partials_skipped_no_speech_presence")
+                    return
+                self.telemetry.count("finals_rejected_no_speech_presence")
+                await self.send(
+                    {
+                        "type": "final",
+                        "utteranceId": request.utterance_id,
+                        "text": "",
+                        "audioMs": request.audio_ms,
+                        "decodeMs": 0,
+                        "startedAtMs": round(request.started_at_ms, 2),
+                        "endedAtMs": round(request.ended_at_ms, 2),
+                        "droppedPartials": self._dropped_partials,
+                        "words": [],
+                        "reason": assessment.reason,
+                        "speechPresence": round(presence, 4),
+                        "speaker": None,
+                        "cadence": self._adapt((), request.audio_ms),
+                    }
+                )
+                return
+
         audio = apply_profile(request.audio, request.sample_rate, self.settings.denoise_profile)
         result = await self.recognizer.transcribe(audio, partial=not final)
 
@@ -215,6 +246,8 @@ class AsrSession:
         }
         if rejected:
             message["reason"] = "no_speech"
+        if presence is not None:
+            message["speechPresence"] = round(presence, 4)
 
         if final:
             message["words"] = [
