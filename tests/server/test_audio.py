@@ -5,7 +5,15 @@ from collections.abc import Callable
 import numpy as np
 import pytest
 
-from server.audio import DecodeKind, DecodeRequest, SpeechSegmenter, SpeechStarted, decode_pcm16
+from server.audio import (
+    SEMANTIC_HANGOVER_MAX_MS,
+    SEMANTIC_HANGOVER_MIN_MS,
+    DecodeKind,
+    DecodeRequest,
+    SpeechSegmenter,
+    SpeechStarted,
+    decode_pcm16,
+)
 from server.config import Settings
 
 
@@ -105,3 +113,93 @@ def test_short_noise_blip_is_not_promoted_by_silent_preroll() -> None:
     assert segmenter.feed(pcm_frame(0), 400) == []
     assert segmenter.feed(pcm_frame(0), 500) == []
     assert not segmenter.in_speech
+
+
+@pytest.mark.parametrize("frame_ms", [20, 40])
+def test_low_granularity_frames_preserve_sample_relative_offsets(frame_ms: int) -> None:
+    """Twenty- and forty-millisecond packets must retain the same tail audio."""
+    settings = Settings(
+        vad_rms_threshold=0.02,
+        pre_roll_ms=frame_ms * 2,
+        min_speech_ms=frame_ms,
+        end_silence_ms=frame_ms * 3,
+        partial_interval_ms=10_000,
+    )
+    segmenter = SpeechSegmenter(settings)
+    clock = 0
+    for _ in range(2):
+        clock += frame_ms
+        assert segmenter.feed(pcm_frame(0, frame_ms), clock) == []
+
+    started_events = segmenter.feed(pcm_frame(0.2, frame_ms), clock + frame_ms)
+    started = next(event for event in started_events if isinstance(event, SpeechStarted))
+    assert started.start_sample == 0
+    assert started.pre_roll_samples == frame_ms * 2 * 16
+
+    clock += frame_ms
+    segmenter.feed(pcm_frame(0.2, frame_ms), clock + frame_ms)
+    clock += frame_ms
+    segmenter.feed(pcm_frame(0.2, frame_ms), clock + frame_ms)
+    final_events: list[object] = []
+    for _ in range(3):
+        clock += frame_ms
+        final_events.extend(segmenter.feed(pcm_frame(0, frame_ms), clock + frame_ms))
+
+    final = next(event for event in final_events if isinstance(event, DecodeRequest))
+    assert final.kind is DecodeKind.FINAL
+    assert final.start_sample == started.start_sample
+    assert final.endpoint_offset_samples == len(final.audio)
+    assert final.last_voice_offset_samples < final.endpoint_offset_samples
+    assert final.tail_samples == frame_ms * 3 * 16
+    assert final.endpoint_offset_samples % (frame_ms * 16) == 0
+
+
+def test_semantic_complete_hint_uses_short_hangover_only_when_supplied() -> None:
+    settings = Settings(
+        vad_rms_threshold=0.02,
+        pre_roll_ms=0,
+        min_speech_ms=40,
+        end_silence_ms=520,
+        partial_interval_ms=10_000,
+    )
+    hinted = SpeechSegmenter(settings)
+    clock = 0
+    for _ in range(3):
+        clock += 40
+        hinted.feed(pcm_frame(0.2, 40), clock)
+    for _ in range(4):
+        clock += 40
+        events = hinted.feed(pcm_frame(0, 40), clock, semantic_complete_hint=True)
+    final = next(event for event in events if isinstance(event, DecodeRequest))
+    assert final.kind is DecodeKind.FINAL
+    assert SEMANTIC_HANGOVER_MIN_MS <= final.tail_samples / 16 <= SEMANTIC_HANGOVER_MAX_MS
+
+    ordinary = SpeechSegmenter(settings)
+    clock = 0
+    for _ in range(3):
+        clock += 40
+        ordinary.feed(pcm_frame(0.2, 40), clock)
+    for _ in range(4):
+        clock += 40
+        assert ordinary.feed(pcm_frame(0, 40), clock) == []
+    assert ordinary.in_speech
+
+
+def test_pre_speech_semantic_hint_does_not_leak_into_next_utterance() -> None:
+    settings = Settings(
+        vad_rms_threshold=0.02,
+        pre_roll_ms=80,
+        min_speech_ms=40,
+        end_silence_ms=520,
+        partial_interval_ms=10_000,
+    )
+    segmenter = SpeechSegmenter(settings)
+    assert segmenter.feed(pcm_frame(0, 40), 40, semantic_complete_hint=True) == []
+    assert not segmenter.semantic_complete_hint
+
+    started = segmenter.feed(pcm_frame(0.2, 40), 80)
+    assert any(isinstance(event, SpeechStarted) for event in started)
+    assert not segmenter.semantic_complete_hint
+    for index in range(4):
+        assert segmenter.feed(pcm_frame(0, 40), 120 + index * 40) == []
+    assert segmenter.in_speech

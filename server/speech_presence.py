@@ -70,6 +70,110 @@ class Presence:
         return "clipped" if self.clipped else "no_speech"
 
 
+class StreamingSpeechPresence:
+    """Advisory speech-presence view for a low-granularity PCM stream.
+
+    ``update`` is useful for avoiding work on obviously quiet partials, but it
+    is intentionally not a replacement for the final gate.  ``finalize``
+    always calls :func:`assess`, retaining both the saturation check and the
+    sustained Silero check that protect final chart writes.  The tracker keeps
+    only a bounded rolling window; callers with a longer utterance pass the
+    complete segment to ``finalize(audio)`` so this helper does not duplicate
+    the segmenter's full PCM buffer.
+    """
+
+    def __init__(self, threshold: float = 0.35) -> None:
+        if not 0.0 < threshold <= 1.0:
+            raise ValueError("speech presence threshold must be between 0 and 1")
+        self.threshold = threshold
+        self._rolling = np.zeros(0, dtype=np.float32)
+        self._samples = 0
+        self._clipped_samples = 0
+        self._last_evaluated_samples = 0
+        self._stream_presence = Presence(0.0, 0.0)
+
+    @property
+    def presence(self) -> Presence:
+        """Most recent advisory streaming estimate."""
+        return self._stream_presence
+
+    @property
+    def samples(self) -> int:
+        return self._samples
+
+    def is_speech(self, presence: Presence | None = None) -> bool:
+        """Check the latest advisory (or supplied final) result."""
+        return (presence or self._stream_presence).is_speech(self.threshold)
+
+    def update(self, audio: FloatAudio) -> Presence:
+        """Add one PCM chunk and return an advisory presence estimate."""
+        samples = np.asarray(audio, dtype=np.float32)
+        if samples.size == 0:
+            return self._stream_presence
+        chunk = samples.copy()
+        self._samples += len(chunk)
+        self._clipped_samples += int(np.count_nonzero(np.abs(chunk) >= CLIPPED_LEVEL))
+
+        self._rolling = np.concatenate((self._rolling, chunk))
+        # A bounded rolling view keeps update cost stable for long utterances;
+        # finalization uses the caller-supplied complete segment when one is
+        # available, otherwise this window is the only safe fallback.
+        rolling_limit = WINDOW_SAMPLES * SUSTAIN_WINDOWS * 4
+        if len(self._rolling) > rolling_limit:
+            self._rolling = self._rolling[-rolling_limit:]
+
+        # Do not run Silero for every 20 ms packet.  Before one sustained
+        # window exists, the safe advisory result is simply not-speech.
+        enough_new_audio = self._samples - self._last_evaluated_samples >= (
+            WINDOW_SAMPLES * SUSTAIN_WINDOWS
+        )
+        if enough_new_audio and len(self._rolling) >= WINDOW_SAMPLES * SUSTAIN_WINDOWS:
+            self._stream_presence = Presence(
+                speech_probability(self._rolling),
+                self._clipped_samples / self._samples,
+            )
+            self._last_evaluated_samples = self._samples
+        return self._stream_presence
+
+    def finalize(self, audio: FloatAudio | None = None) -> Presence:
+        """Run authoritative final checks on the complete segment.
+
+        For short streams, omitting ``audio`` is convenient because the rolling
+        buffer still contains the complete input.  Once the stream exceeds
+        that bounded buffer, callers must provide the complete final segment;
+        silently assessing only the tail would weaken the final gate.
+        """
+        if self._samples == 0:
+            self._stream_presence = Presence(0.0, 0.0)
+            return self._stream_presence
+        if audio is None:
+            if self._samples > len(self._rolling):
+                raise ValueError("complete audio is required for final presence assessment")
+            complete = self._rolling
+        else:
+            complete = np.asarray(audio, dtype=np.float32)
+        self._stream_presence = assess(complete)
+        self._last_evaluated_samples = self._samples
+        return self._stream_presence
+
+    # ``observe`` and ``final_assessment`` make the intended two-phase API
+    # readable to callers that already use those terms for streaming VADs.
+    observe = update
+    final_assessment = finalize
+
+    def reset(self) -> None:
+        self._rolling = np.zeros(0, dtype=np.float32)
+        self._samples = 0
+        self._clipped_samples = 0
+        self._last_evaluated_samples = 0
+        self._stream_presence = Presence(0.0, 0.0)
+
+
+# Keep the tracker discoverable under the shorter name used by a few callers;
+# both names share the same final-assessment contract above.
+StreamingPresence = StreamingSpeechPresence
+
+
 @lru_cache(maxsize=1)
 def _model() -> Any:
     from faster_whisper.vad import get_vad_model

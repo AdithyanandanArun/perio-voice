@@ -128,6 +128,27 @@ def test_resetting_returns_to_the_configured_starting_point() -> None:
     assert controller.end_silence_ms == SETTINGS.end_silence_ms
 
 
+def test_semantic_complete_hint_is_a_short_one_shot_hangover() -> None:
+    controller = CadenceController(SETTINGS)
+    ordinary = controller.endpoint_ms()
+    hinted = controller.endpoint_ms(semantic_complete_hint=True)
+    assert SETTINGS.min_end_silence_ms <= ordinary <= SETTINGS.max_end_silence_ms
+    assert 120 <= hinted <= 200
+    # Asking for the short budget must not overwrite the adaptive estimate
+    # used by the next ordinary utterance.
+    assert controller.endpoint_ms() == ordinary
+
+
+def test_observe_reports_semantic_hint_without_changing_adaptive_history() -> None:
+    controller = CadenceController(SETTINGS)
+    one_word = (WordTiming("three", 0, 300, 0.95),)
+    state = controller.observe(one_word, 300, semantic_complete=True)
+    assert 120 <= state.end_silence_ms <= 200
+    assert state.semantic_complete
+    assert state.as_message()["semanticComplete"] is True
+    assert controller.end_silence_ms == SETTINGS.end_silence_ms
+
+
 @pytest.mark.asyncio
 async def test_a_finished_utterance_moves_the_live_endpoint() -> None:
     """The controller is only useful if the segmenter actually follows it."""
