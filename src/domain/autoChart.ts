@@ -14,7 +14,13 @@ import { canonicalize } from './lexicon';
 import { buildLattice } from './lattice';
 import { processUtterance } from './pipeline';
 import { resolveWithContext } from './contextResolver';
-import { recordEvent, recordParserDuration } from './session';
+import {
+  inspectTransaction,
+  rememberTransaction,
+  observedVersionOf,
+  recordEvent,
+  recordParserDuration,
+} from './session';
 import type { ClinicalSession, UtteranceInput } from './types';
 
 export type AutoChartMode = 'single' | 'batch';
@@ -61,8 +67,10 @@ function rejectBatch(
   clauses: number,
   reason: string,
   started: number,
+  registerTransaction = true,
 ): AutoChartResult {
   const durationMs = Math.round((now() - started) * 100) / 100;
+  const check = inspectTransaction(session, input);
   const rejected = recordEvent(session, {
     kind: 'rejected',
     transcript: input.transcript,
@@ -70,9 +78,24 @@ function rejectBatch(
     occurredAt: input.timing.observedAt,
     latencyMs: null,
     trace: [{ stage: 'auto_chart', outcome: 'reject', detail: reason, durationMs }],
+    transaction: check.identity,
+    lifecycle: 'held',
+    decision: 'rejected',
   });
+  const settled = registerTransaction
+    ? rememberTransaction(
+        rejected,
+        input,
+        'rejected',
+        'held',
+        rejected.history[0]?.id ?? null,
+        rejected.history[0]?.journalEntryId ?? null,
+        input.timing.observedAt,
+        check.identity,
+      )
+    : rejected;
   return {
-    session: recordParserDuration(rejected, durationMs),
+    session: recordParserDuration(settled, durationMs),
     mode: 'batch',
     decision: 'rejected',
     clauses,
@@ -91,16 +114,69 @@ export function processAutoChart(
 ): AutoChartResult {
   const clauses = splitAutoChartClauses(input.transcript);
   if (clauses.length < 2) {
+    const transaction = inspectTransaction(session, input);
+    if (transaction.state === 'duplicate') {
+      const prior = transaction.previous;
+      return {
+        session,
+        mode: 'single',
+        decision: prior?.decision === 'committed' ? 'committed' : 'rejected',
+        clauses: 1,
+        reason: prior?.decision === 'committed'
+          ? null
+          : 'duplicate transaction returned its prior protected decision',
+      };
+    }
+    const next = processUtterance(session, input);
+    const event = next.history[0];
     return {
-      session: processUtterance(session, input),
+      session: next,
       mode: 'single',
-      decision: 'committed',
+      decision: event?.decision === 'committed' ? 'committed' : 'rejected',
       clauses: 1,
-      reason: null,
+      reason: event?.decision === 'committed' ? null : event?.message ?? 'single transaction was protected',
     };
   }
 
   const started = now();
+  const transaction = inspectTransaction(session, input);
+  const missingAsrContext = input.source === 'asr'
+    && transaction.identity !== null
+    && observedVersionOf(input) === null;
+  if (missingAsrContext) {
+    return rejectBatch(
+      session,
+      input,
+      clauses.length,
+      'transaction-bearing ASR input requires an observed context version',
+      started,
+      false,
+    );
+  }
+  if (transaction.state === 'duplicate') {
+    const prior = transaction.previous;
+    return {
+      session,
+      mode: 'batch',
+      decision: prior?.decision === 'committed' ? 'committed' : 'rejected',
+      clauses: clauses.length,
+      reason: prior?.decision === 'committed'
+        ? null
+        : 'duplicate transaction returned its prior protected decision',
+    };
+  }
+  if (transaction.state === 'conflict') {
+    return rejectBatch(
+      session,
+      input,
+      clauses.length,
+      'transaction identity was reused with different clinical content',
+      started,
+      false,
+    );
+  }
+  const priorEventIds = new Set(session.history.map((event) => event.id));
+  const priorJournalIds = new Set(session.journal.map((entry) => entry.id));
   for (let index = 0; index < clauses.length; index += 1) {
     if (!hasExplicitStation(clauses[index], session)) {
       return rejectBatch(
@@ -124,6 +200,15 @@ export function processAutoChart(
       observedVersion: index === 0 ? input.observedVersion : null,
       alternatives: undefined,
       strictAutoChart: true,
+      // A batch is one transaction. Only its first shadow clause owns the
+      // outer identity; later clauses are private work and must not look like
+      // duplicate finals with the same id.
+      transactionId: index === 0 ? input.transactionId : null,
+      streamId: index === 0 ? input.streamId : null,
+      utteranceId: index === 0 ? input.utteranceId : null,
+      revision: index === 0 ? input.revision : undefined,
+      originalContextVersion: index === 0 ? input.originalContextVersion : null,
+      replayOfTransaction: index === 0 ? input.replayOfTransaction : undefined,
     };
     candidate = processUtterance(candidate, clauseInput);
     const event = candidate.history[0];
@@ -138,6 +223,55 @@ export function processAutoChart(
       );
     }
   }
+
+  if (transaction.identity !== null) {
+    const identity = transaction.identity;
+    candidate = {
+      ...candidate,
+      // A batch is one durable transaction even though each directive was
+      // evaluated through the ordinary pipeline on a private shadow session.
+      history: candidate.history.map((event) =>
+        priorEventIds.has(event.id)
+          ? event
+          : {
+              ...event,
+              transaction: event.transaction ?? identity,
+              transactionId: identity.transactionId,
+              streamId: identity.streamId,
+              utteranceId: identity.utteranceId,
+              revision: identity.revision,
+              observedVersion: identity.observedVersion,
+              originalContextVersion: identity.originalContextVersion,
+            },
+      ),
+      journal: candidate.journal.map((entry) =>
+        priorJournalIds.has(entry.id)
+          ? entry
+          : {
+              ...entry,
+              transactionId: identity.transactionId,
+              streamId: identity.streamId,
+              utteranceId: identity.utteranceId,
+              revision: identity.revision,
+              observedVersion: identity.observedVersion,
+              originalContextVersion: identity.originalContextVersion,
+            },
+      ),
+    };
+  }
+  const outerEvent = candidate.history.find(
+    (event) => event.transaction?.transactionId === transaction.identity?.transactionId,
+  );
+  candidate = rememberTransaction(
+    candidate,
+    input,
+    'committed',
+    'confirmed',
+    outerEvent?.id ?? null,
+    outerEvent?.journalEntryId ?? null,
+    input.timing.observedAt,
+    transaction.identity,
+  );
 
   return {
     session: candidate,

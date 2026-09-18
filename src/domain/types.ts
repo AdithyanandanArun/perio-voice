@@ -100,6 +100,15 @@ export type ClinicalEventKind =
 
 export interface ClinicalEvent {
   id: number;
+  transaction: TransactionIdentity | null;
+  transactionId: string | null;
+  streamId: string | null;
+  utteranceId: number | string | null;
+  revision: number;
+  observedVersion: number | null;
+  originalContextVersion: number | null;
+  lifecycle: TransactionLifecycle;
+  decision: TransactionDecision;
   kind: ClinicalEventKind;
   transcript: string;
   message: string;
@@ -107,6 +116,13 @@ export interface ClinicalEvent {
   latencyMs: number | null;
   /** Stage-by-stage explanation of how this utterance was handled. */
   trace: StageTrace[];
+  /**
+   * Ephemeral fast-path result. A non-null value replaces the UI overlay for
+   * this transaction; null clears/settles it. Durable chart and journal state
+   * intentionally remain separate.
+   */
+  projection: ClinicalEventProjection | null;
+  projectionAction: ProjectionAction;
   journalEntryId: number | null;
 }
 
@@ -173,17 +189,58 @@ export interface PipelineOverrides {
   correction?: boolean;
 }
 
+/**
+ * Lifecycle for a recognition transaction. Provisional and held values are
+ * projection-only states; only confirmed/corrected values reach durable state.
+ */
+export type TransactionLifecycle = 'provisional' | 'confirmed' | 'corrected' | 'held';
+
+export type TransactionDecision = 'committed' | 'held' | 'rejected' | 'ignored';
+
+/** Stable identity carried across recognition, projection and confirmation. */
+export interface TransactionIdentity {
+  transactionId: string;
+  streamId: string | null;
+  utteranceId: number | string | null;
+  revision: number;
+  /** Context version observed when recognition began. */
+  observedVersion: number | null;
+  /** Explicit alias for clients that call the field an original version. */
+  originalContextVersion: number | null;
+}
+
+/** Bounded idempotency record retained by the in-memory clinical session. */
+export interface TransactionRecord {
+  identity: TransactionIdentity;
+  payloadHash: string;
+  lifecycle: TransactionLifecycle;
+  decision: TransactionDecision;
+  eventId: number | null;
+  journalEntryId: number | null;
+  updatedAt: number;
+}
+
 /** Everything the intelligence layer is allowed to see about one final result. */
 export interface UtteranceInput {
   transcript: string;
   words: AsrWord[];
   timing: TranscriptTiming;
   source: UtteranceSource;
-  utteranceId: number | null;
+  utteranceId: number | string | null;
   audioMs: number | null;
   decodeMs: number | null;
   /** Context version observed when this utterance started, for stale rejection. */
   observedVersion: number | null;
+  /** Optional stream identity from the recognition transport. */
+  streamId?: string | null;
+  /** Stable transaction identity; absent for legacy simulator inputs. */
+  transactionId?: string | null;
+  /** Monotonic producer revision within a transaction identity. */
+  revision?: number;
+  /** Additive alias for clients using this terminology. */
+  originalContextVersion?: number | null;
+  /** Optional producer lifecycle; durable processing derives its own outcome. */
+  lifecycle?: TransactionLifecycle;
   speaker: SpeakerVerdict | null;
   /** Competing readings, best first. Consulted only when the best yields nothing. */
   alternatives?: RecognitionAlternative[];
@@ -193,6 +250,8 @@ export interface UtteranceInput {
    * its established conversational grammar and confirmation behaviour.
    */
   strictAutoChart?: boolean;
+  /** Internal replay marker used when a held transaction is approved. */
+  replayOfTransaction?: boolean;
   overrides?: PipelineOverrides;
 }
 
@@ -228,10 +287,19 @@ export type ConfirmationReason =
   | 'ambiguous_correction'
   | 'low_confidence_polarity'
   | 'unknown_speaker'
-  | 'sequence_mismatch';
+  | 'sequence_mismatch'
+  | 'missing_grade'
+  // Keep confirmation consumers source-compatible with additive reasons from
+  // later leaves while retaining the canonical reasons above for the domain.
+  | `${string}`;
 
 export interface PendingConfirmation {
   id: number;
+  transaction?: TransactionIdentity | null;
+  /** False for clarification holds that require a repeat rather than approval. */
+  approvable?: boolean;
+  /** Explicitly tells the UI that the held phrase must be repeated. */
+  repeatRequired?: boolean;
   reason: ConfirmationReason;
   transcript: string;
   message: string;
@@ -264,8 +332,56 @@ export interface ChartChange {
   after: number | boolean | null;
 }
 
+/** How a clinical event reconciles the projected fast-path overlay. */
+export type ProjectionAction = 'replace' | 'confirm' | 'clear' | 'none';
+
+/**
+ * Event-local projection for a provisional recognition result. `changes` are
+ * the requested chart changes and `context`/`workflow` are the post-parse
+ * shadow state the UI may render immediately. None of these values are
+ * durable until a later confirmed event is accepted.
+ */
+export interface ClinicalEventProjection {
+  transaction: TransactionIdentity;
+  changes: ChartChange[];
+  context: ClinicalContext;
+  workflow: WorkflowState;
+}
+
+/**
+ * Ephemeral projection contract for the fast path. These values are never
+ * stored in `ClinicalSession.charts` or `ClinicalSession.journal`; a later UI
+ * may render them over confirmed state and drop them on rejection.
+ */
+export interface ProjectedChartChange extends ChartChange {
+  transaction: TransactionIdentity;
+  lifecycle: TransactionLifecycle;
+}
+
+export interface ProjectedTransaction {
+  identity: TransactionIdentity;
+  lifecycle: TransactionLifecycle;
+  decision: TransactionDecision;
+  changes: ProjectedChartChange[];
+}
+
+export interface ProjectedOverlay {
+  revision: number;
+  generatedAt: number;
+  transactions: ProjectedTransaction[];
+}
+
 export interface JournalEntry {
   id: number;
+  /** Null for legacy/button writes; set for recognized transactions. */
+  transactionId: string | null;
+  streamId: string | null;
+  utteranceId: number | string | null;
+  revision: number;
+  observedVersion: number | null;
+  originalContextVersion: number | null;
+  /** Durable journal entries are confirmed, or corrected confirmed writes. */
+  lifecycle: 'confirmed' | 'corrected';
   transcript: string;
   kind: ClinicalEventKind;
   changes: ChartChange[];
@@ -320,6 +436,10 @@ export interface ClinicalSession {
   nextEventId: number;
   nextJournalId: number;
   nextConfirmationId: number;
+  /** Bounded transaction identity/payload registry for idempotent finals. */
+  transactions: Record<string, TransactionRecord>;
+  /** Insertion order for deterministic bounded eviction. */
+  transactionOrder: string[];
 }
 
 /* ------------------------------------------------------------------ */
