@@ -17,3 +17,5 @@ graphify-out/
 *.log
 .~lock.*
 *.tsbuildinfo
+evaluation/results/
+.serena/
