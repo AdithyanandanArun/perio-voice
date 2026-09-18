@@ -3,11 +3,15 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
     super();
     const config = options.processorOptions ?? {};
     this.targetSampleRate = config.targetSampleRate ?? 16000;
-    this.batchSamples = Math.round(this.targetSampleRate * (config.batchMs ?? 100) / 1000);
+    const requestedBatchMs = Number.isFinite(config.batchMs) && config.batchMs > 0
+      ? config.batchMs
+      : 40;
+    this.batchSamples = Math.max(1, Math.round(this.targetSampleRate * requestedBatchMs / 1000));
     this.ratio = sampleRate / this.targetSampleRate;
     this.requiredSamples = Math.ceil(this.batchSamples * this.ratio) + 1;
     this.buffer = new Float32Array(this.requiredSamples + 256);
     this.bufferLength = 0;
+    this.sampleOffset = 0;
 
     // Four biquads form an eighth-order Butterworth low-pass. At a 16 kHz
     // output rate, the cutoff is 7.6 kHz: close to the retained Nyquist band,
@@ -81,8 +85,16 @@ class PcmCaptureProcessor extends AudioWorkletProcessor {
       const consumed = Math.floor(this.batchSamples * this.ratio);
       this.buffer.copyWithin(0, consumed, this.bufferLength);
       this.bufferLength -= consumed;
+      const startSample = this.sampleOffset;
+      this.sampleOffset += this.batchSamples;
       this.port.postMessage(
-        { pcm: pcm.buffer, level: Math.sqrt(squareSum / this.batchSamples) },
+        {
+          pcm: pcm.buffer,
+          level: Math.sqrt(squareSum / this.batchSamples),
+          sampleRate: this.targetSampleRate,
+          startSample,
+          endSample: this.sampleOffset,
+        },
         [pcm.buffer],
       );
     }

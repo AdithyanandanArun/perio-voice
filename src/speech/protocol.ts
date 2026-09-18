@@ -29,6 +29,45 @@ export const CAPTURE_CONSTRAINTS = {
 
 export const ASR_PROTOCOL_VERSION = 1;
 export const TARGET_SAMPLE_RATE = 16_000;
+/**
+ * Live capture deliberately uses a small, fixed batch. 40 ms keeps transport
+ * overhead below the 20 ms option while cutting the old 100 ms capture floor
+ * by more than half. The worklet still accepts an explicit batch size for
+ * offline/fixture callers and backwards-compatible tests.
+ */
+export const LIVE_BATCH_MS = 40;
+export const LIVE_BATCH_SAMPLES = TARGET_SAMPLE_RATE * LIVE_BATCH_MS / 1_000;
+/** Non-live enrollment and fixture recordings retain the established cadence. */
+export const CAPTURE_BATCH_MS = 100;
+/**
+ * A browser WebSocket has no application-level backpressure callback. Keep at
+ * most three live batches in its native send buffer; once that bound is hit,
+ * the capture thread continues and the dropped sample range is reported by an
+ * ordered `audio_gap` control rather than allowing an unbounded PCM backlog.
+ */
+export const MAX_BUFFERED_AUDIO_BYTES = LIVE_BATCH_SAMPLES * Int16Array.BYTES_PER_ELEMENT * 3;
+
+export interface AudioGapControl {
+  type: 'audio_gap';
+  streamId: string;
+  sampleRate: number;
+  startSample: number;
+  endSample: number;
+}
+
+export function createAudioGapControl(
+  streamId: string,
+  startSample: number,
+  endSample: number,
+): AudioGapControl {
+  return {
+    type: 'audio_gap',
+    streamId,
+    sampleRate: TARGET_SAMPLE_RATE,
+    startSample,
+    endSample,
+  };
+}
 
 export type AsrStatus =
   | 'unsupported'
@@ -75,16 +114,65 @@ export interface RuntimeInfo {
   engine?: string;
 }
 
+export type AsrLifecycle = 'provisional' | 'confirmed' | 'corrected' | 'held';
+
+/** The recognizer path is intentionally open-ended for additive server paths. */
+export type RecognitionPath = string;
+
+/**
+ * Timing relative to the captured PCM stream. These offsets are not wall-clock
+ * values and must never be populated from the server's monotonic timestamps.
+ */
+export interface AsrSampleTiming {
+  sampleRate: number | null;
+  startSample: number | null;
+  endSample: number | null;
+  durationSamples: number | null;
+}
+
+export type AsrTiming = TranscriptTiming & AsrSampleTiming;
+
+export interface AsrIdentity {
+  streamId: string | null;
+  utteranceId: number | null;
+  transactionId: string | null;
+  revision: number;
+  originalContextVersion: number | null;
+}
+
+export interface AsrPartial extends AsrIdentity {
+  transcript: string;
+  timing: AsrTiming;
+  lifecycle: AsrLifecycle;
+  recognitionPath: RecognitionPath | null;
+  audioMs: number | null;
+  decodeMs: number | null;
+}
+
+export interface AsrEndpoint extends AsrIdentity {
+  timing: AsrTiming;
+  lifecycle: AsrLifecycle;
+  recognitionPath: RecognitionPath | null;
+  audioMs: number | null;
+}
+
 /** Everything one finished utterance carries across the recognition boundary. */
 export interface AsrFinal {
   alternatives: RecognitionAlternative[];
   transcript: string;
-  timing: TranscriptTiming;
+  timing: AsrTiming;
   words: AsrWord[];
+  streamId: string | null;
   utteranceId: number | null;
+  transactionId: string | null;
+  revision: number;
+  originalContextVersion: number | null;
+  lifecycle: AsrLifecycle;
+  recognitionPath: RecognitionPath | null;
   audioMs: number | null;
   decodeMs: number | null;
   speaker: SpeakerVerdict | null;
+  /** Kept as the established name used by the clinical pipeline. */
   observedVersion: number | null;
 }
 
@@ -110,11 +198,24 @@ export interface AsrServerMessage {
   device?: string;
   computeType?: string;
   text?: string;
+  streamId?: string | null;
+  transactionId?: string | null;
+  revision?: number | null;
+  originalContextVersion?: number | null;
+  contextVersion?: number | null;
+  lifecycle?: string;
+  recognitionPath?: string | null;
+  path?: string | null;
   decodeMs?: number;
   audioMs?: number;
-  utteranceId?: number;
+  utteranceId?: number | null;
   startedAtMs?: number;
   endedAtMs?: number;
+  sampleRate?: number;
+  startSample?: number;
+  endSample?: number;
+  durationSamples?: number;
+  endpoint?: boolean;
   droppedPartials?: number;
   words?: WordMessage[];
   speaker?: SpeakerMessage | null;
@@ -192,5 +293,61 @@ export function readCadence(message: AsrServerMessage): CadenceInfo | null {
     pauseP90Ms: cadence.pauseP90Ms ?? 0,
     samples: cadence.samples ?? 0,
     adaptive: cadence.adaptive ?? false,
+  };
+}
+
+const LIFECYCLES = new Set<AsrLifecycle>([
+  'provisional',
+  'confirmed',
+  'corrected',
+  'held',
+]);
+
+export function readLifecycle(
+  message: AsrServerMessage,
+  fallback: AsrLifecycle,
+): AsrLifecycle {
+  return typeof message.lifecycle === 'string' && LIFECYCLES.has(message.lifecycle as AsrLifecycle)
+    ? message.lifecycle as AsrLifecycle
+    : fallback;
+}
+
+export function readRecognitionPath(message: AsrServerMessage): RecognitionPath | null {
+  const path = message.recognitionPath ?? message.path ?? message.engine;
+  return typeof path === 'string' && path.trim() !== '' ? path.trim() : null;
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function nonNegativeNumber(value: unknown): number | null {
+  const number = finiteNumber(value);
+  return number !== null && number >= 0 ? number : null;
+}
+
+export function readOriginalContextVersion(message: AsrServerMessage): number | null {
+  return finiteNumber(message.originalContextVersion) ?? finiteNumber(message.contextVersion);
+}
+
+export function readSampleTiming(message: AsrServerMessage): AsrSampleTiming {
+  const startSample = nonNegativeNumber(message.startSample);
+  const endSample = nonNegativeNumber(message.endSample);
+  const explicitDuration = nonNegativeNumber(message.durationSamples);
+  const inferredDuration = startSample !== null && endSample !== null && endSample >= startSample
+    ? endSample - startSample
+    : null;
+  const durationSamples = explicitDuration ?? inferredDuration;
+  const sampleRateValue = finiteNumber(message.sampleRate);
+  const sampleRate = sampleRateValue !== null && sampleRateValue > 0 ? sampleRateValue : null;
+  const resolvedSampleRate = sampleRate
+    ?? (startSample !== null || endSample !== null || durationSamples !== null
+      ? TARGET_SAMPLE_RATE
+      : null);
+  return {
+    sampleRate: resolvedSampleRate,
+    startSample,
+    endSample,
+    durationSamples,
   };
 }

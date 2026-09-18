@@ -1,8 +1,21 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { captureSeconds } from '../src/speech/capture';
-import { asrWebSocketUrl, parseServerMessage } from '../src/speech/protocol';
+import {
+  asrWebSocketUrl,
+  MAX_BUFFERED_AUDIO_BYTES,
+  parseServerMessage,
+  type AsrEndpoint,
+  type AsrPartial,
+} from '../src/speech/protocol';
 import { useLocalAsr } from '../src/speech/useLocalAsr';
+
+interface MockWorkletAudio {
+  pcm: ArrayBuffer;
+  level: number;
+  startSample?: number;
+  endSample?: number;
+}
 
 class MockWebSocket {
   static CONNECTING = 0;
@@ -12,6 +25,7 @@ class MockWebSocket {
   static instances: MockWebSocket[] = [];
   readyState = MockWebSocket.CONNECTING;
   binaryType = '';
+  bufferedAmount = 0;
   sent: (string | ArrayBuffer)[] = [];
   onopen: (() => void) | null = null;
   onmessage: ((event: MessageEvent<string>) => void) | null = null;
@@ -67,11 +81,17 @@ class MockAudioContext {
 
 class MockAudioWorkletNode {
   static instance: MockAudioWorkletNode | null = null;
-  port = { onmessage: null as ((event: MessageEvent<{ pcm: ArrayBuffer; level: number }>) => void) | null };
+  port = { onmessage: null as ((event: MessageEvent<MockWorkletAudio>) => void) | null };
+  readonly processorOptions: unknown;
   connect = vi.fn();
   disconnect = vi.fn();
 
-  constructor() {
+  constructor(
+    _context?: unknown,
+    _name?: string,
+    options?: { processorOptions?: unknown },
+  ) {
+    this.processorOptions = options?.processorOptions;
     MockAudioWorkletNode.instance = this;
   }
 }
@@ -124,8 +144,10 @@ describe('local ASR browser adapter', () => {
   it('captures PCM, exposes partials, commits finals, and releases every resource', async () => {
     installAudioEnvironment();
     const onFinal = vi.fn();
+    const onPartial = vi.fn<(partial: AsrPartial) => void>();
+    const onEndpoint = vi.fn<(endpoint: AsrEndpoint) => void>();
     const { result, unmount } = renderHook(() =>
-      useLocalAsr({ onFinal, contextVersion: () => 7 }));
+      useLocalAsr({ onFinal, onPartial, onEndpoint, contextVersion: () => 7 }));
     const socket = MockWebSocket.instances[0];
     expect(socket.url).toBe('ws://localhost:3000/ws/asr');
     ready(socket);
@@ -134,33 +156,128 @@ describe('local ASR browser adapter', () => {
 
     await act(async () => result.current.start());
     expect(addModule).toHaveBeenCalledWith('/audio/pcm-capture-worklet.js');
-    expect(socket.sent).toContain(JSON.stringify({ type: 'start' }));
+    expect(MockAudioWorkletNode.instance?.processorOptions).toEqual({
+      targetSampleRate: 16_000,
+      batchMs: 40,
+    });
+    const startControl = socket.sent.find((value): value is string =>
+      typeof value === 'string' && JSON.parse(value).type === 'start');
+    expect(startControl).toBeDefined();
+    expect(JSON.parse(startControl as string)).toEqual({
+      type: 'start',
+      streamId: expect.any(String),
+    });
     act(() => socket.message({ type: 'listening' }));
     expect(result.current.listening).toBe(true);
 
     const pcm = new ArrayBuffer(3_200);
     act(() => MockAudioWorkletNode.instance?.port.onmessage?.({
-      data: { pcm, level: 0.1 },
-    } as MessageEvent<{ pcm: ArrayBuffer; level: number }>));
+      data: { pcm, level: 0.1, startSample: 0, endSample: 1_600 },
+    } as MessageEvent<MockWorkletAudio>));
     expect(socket.sent).toContain(pcm);
     expect(result.current.audioLevel).toBeCloseTo(0.4);
+
+    socket.bufferedAmount = 10_000;
+    const blockedPcm = new ArrayBuffer(1_280);
+    act(() => MockAudioWorkletNode.instance?.port.onmessage?.({
+      data: { pcm: blockedPcm, level: 0.2, startSample: 1_600, endSample: 2_240 },
+    } as MessageEvent<MockWorkletAudio>));
+    expect(socket.sent).not.toContain(blockedPcm);
+    const blockedPcm2 = new ArrayBuffer(1_280);
+    act(() => MockAudioWorkletNode.instance?.port.onmessage?.({
+      data: { pcm: blockedPcm2, level: 0.2, startSample: 2_240, endSample: 2_880 },
+    } as MessageEvent<MockWorkletAudio>));
+    expect(socket.sent).not.toContain(blockedPcm2);
+    expect(socket.sent.filter((value) =>
+      typeof value === 'string' && JSON.parse(value).type === 'audio_gap')).toHaveLength(0);
+
+    socket.bufferedAmount = 0;
+    const resumedPcm = new ArrayBuffer(1_280);
+    act(() => MockAudioWorkletNode.instance?.port.onmessage?.({
+      data: { pcm: resumedPcm, level: 0.2, startSample: 2_880, endSample: 3_520 },
+    } as MessageEvent<MockWorkletAudio>));
+    const gapIndex = socket.sent.findIndex((value) =>
+      typeof value === 'string' && JSON.parse(value).type === 'audio_gap');
+    const resumedIndex = socket.sent.indexOf(resumedPcm);
+    expect(gapIndex).toBeGreaterThan(-1);
+    expect(gapIndex).toBeLessThan(resumedIndex);
+    expect(JSON.parse(socket.sent[gapIndex] as string)).toEqual({
+      type: 'audio_gap',
+      streamId: expect.any(String),
+      sampleRate: 16_000,
+      startSample: 1_600,
+      endSample: 2_880,
+    });
 
     act(() => {
       // The context version is captured here, not at commit, so a final that a
       // later jump overtook can still be recognized as stale.
-      socket.message({ type: 'speech_start', utteranceId: 1 });
-      socket.message({ type: 'partial', text: 'three four', decodeMs: 12 });
+      socket.message({
+        type: 'speech_start',
+        streamId: 'stream-1',
+        utteranceId: 1,
+        originalContextVersion: 7,
+        startSample: 32_000,
+      });
+      socket.message({
+        type: 'partial',
+        streamId: 'stream-1',
+        transactionId: 'tx-1',
+        revision: 2,
+        text: 'three four',
+        decodeMs: 12,
+        startSample: 32_000,
+        endSample: 35_200,
+        recognitionPath: 'fast',
+      });
     });
     expect(result.current.status).toBe('processing');
     expect(result.current.interimTranscript).toBe('three four');
     expect(onFinal).not.toHaveBeenCalled();
+    expect(onPartial).toHaveBeenCalledWith(expect.objectContaining({
+      streamId: 'stream-1',
+      transactionId: 'tx-1',
+      revision: 2,
+      lifecycle: 'provisional',
+      recognitionPath: 'fast',
+      timing: expect.objectContaining({
+        startSample: 32_000,
+        endSample: 35_200,
+        durationSamples: 3_200,
+        sampleRate: 16_000,
+      }),
+    }));
+
+    act(() => socket.message({
+      type: 'endpoint',
+      streamId: 'stream-1',
+      transactionId: 'tx-1',
+      revision: 3,
+      endSample: 36_800,
+      audioMs: 300,
+    }));
+    expect(onEndpoint).toHaveBeenCalledWith(expect.objectContaining({
+      streamId: 'stream-1',
+      transactionId: 'tx-1',
+      revision: 3,
+      timing: expect.objectContaining({ endSample: 36_800, sampleRate: 16_000 }),
+    }));
 
     act(() => socket.message({
       type: 'final',
+      streamId: 'stream-1',
+      transactionId: 'tx-1',
+      revision: 4,
+      originalContextVersion: 7,
       text: 'three four five',
       decodeMs: 18,
       audioMs: 720,
       utteranceId: 1,
+      startSample: 32_000,
+      endSample: 43_520,
+      recognitionPath: 'terminal',
+      startedAtMs: 9_000_000,
+      endedAtMs: 9_000_720,
       words: [{ word: 'three', startMs: 0, endMs: 240, probability: 0.97 }],
       speaker: { decision: 'clinician', similarity: 0.98, enrolled: true, voicedMs: 700 },
       cadence: { endSilenceMs: 430, wordsPerSecond: 3.2, pauseP90Ms: 90, samples: 1, adaptive: true },
@@ -170,9 +287,19 @@ describe('local ASR browser adapter', () => {
       timing: expect.objectContaining({
         startedAt: expect.any(Number),
         observedAt: expect.any(Number),
+        startSample: 32_000,
+        endSample: 43_520,
+        durationSamples: 11_520,
+        sampleRate: 16_000,
       }),
       words: [{ word: 'three', startMs: 0, endMs: 240, probability: 0.97 }],
       utteranceId: 1,
+      streamId: 'stream-1',
+      transactionId: 'tx-1',
+      revision: 4,
+      originalContextVersion: 7,
+      lifecycle: 'confirmed',
+      recognitionPath: 'terminal',
       audioMs: 720,
       decodeMs: 18,
       speaker: { decision: 'clinician', similarity: 0.98, overridden: false },
@@ -190,6 +317,37 @@ describe('local ASR browser adapter', () => {
     expect(socket.sent).toContain(JSON.stringify({ type: 'stop' }));
     unmount();
     expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+  });
+
+  it('flushes an unrecovered audio gap before sending stop', async () => {
+    installAudioEnvironment();
+    const { result, unmount } = renderHook(() => useLocalAsr({ onFinal: vi.fn() }));
+    const socket = MockWebSocket.instances[0];
+    ready(socket);
+
+    await act(async () => result.current.start());
+    socket.bufferedAmount = MAX_BUFFERED_AUDIO_BYTES;
+    const droppedPcm = new ArrayBuffer(1_280);
+    act(() => MockAudioWorkletNode.instance?.port.onmessage?.({
+      data: { pcm: droppedPcm, level: 0.2, startSample: 0, endSample: 640 },
+    } as MessageEvent<MockWorkletAudio>));
+    expect(socket.sent).not.toContain(droppedPcm);
+
+    act(() => result.current.stop());
+    const gapIndex = socket.sent.findIndex((value) =>
+      typeof value === 'string' && JSON.parse(value).type === 'audio_gap');
+    const stopIndex = socket.sent.findIndex((value) =>
+      value === JSON.stringify({ type: 'stop' }));
+    expect(gapIndex).toBeGreaterThan(-1);
+    expect(stopIndex).toBe(gapIndex + 1);
+    expect(JSON.parse(socket.sent[gapIndex] as string)).toEqual({
+      type: 'audio_gap',
+      streamId: expect.any(String),
+      sampleRate: 16_000,
+      startSample: 0,
+      endSample: 640,
+    });
+    unmount();
   });
 
   it('declares the clinical expectation so the service can narrow its grammar', async () => {
@@ -309,10 +467,14 @@ describe('shared worklet capture', () => {
     const pcm = new Uint8Array([1, 0, 2, 0]).buffer;
     MockAudioWorkletNode.instance?.port.onmessage?.({
       data: { pcm, level: 0.2 },
-    } as MessageEvent<{ pcm: ArrayBuffer; level: number }>);
+    } as MessageEvent<MockWorkletAudio>);
     await vi.advanceTimersByTimeAsync(1_000);
 
     const blob = await recording;
+    expect(MockAudioWorkletNode.instance?.processorOptions).toEqual({
+      targetSampleRate: 16_000,
+      batchMs: 100,
+    });
     expect(blob.size).toBe(pcm.byteLength);
     expect(blob.type).toBe('application/octet-stream');
     expect(onLevel).toHaveBeenNthCalledWith(1, 0.2);
