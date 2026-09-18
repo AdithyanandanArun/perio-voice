@@ -17,7 +17,9 @@ function say(session: ClinicalSession, transcript: string): ClinicalSession {
 
 function fresh(): ClinicalSession {
   clock = 0;
-  return createInitialSession();
+  // These cases were authored assuming a session starts at tooth 14 buccal;
+  // pin that explicitly now that a new exam starts at tooth 1 buccal instead.
+  return updateContext(createInitialSession(), { tooth: 14, surface: 'buccal' }, -1);
 }
 
 describe('immediate self-correction', () => {

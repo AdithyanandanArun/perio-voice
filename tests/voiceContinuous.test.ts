@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { createInitialSession, currentRecord, processUtterance } from '../src/domain/clinicalEngine';
+import { createInitialSession, currentRecord, processUtterance, updateContext } from '../src/domain/clinicalEngine';
 import { recordAt } from '../src/domain/chart';
-import type { UtteranceInput } from '../src/domain/types';
+import type { SessionSettings, UtteranceInput } from '../src/domain/types';
+
+// These two cases were authored assuming a session starts at tooth 14 buccal;
+// pin that explicitly since a new session now starts at tooth 1 buccal.
+function startSession(settings: Partial<SessionSettings> = {}) {
+  return updateContext(createInitialSession(settings), { tooth: 14, surface: 'buccal' }, -1);
+}
 
 function input(transcript: string, overrides: Partial<UtteranceInput> = {}): UtteranceInput {
   return {
@@ -20,7 +26,7 @@ function input(transcript: string, overrides: Partial<UtteranceInput> = {}): Utt
 
 describe('voice control of continuous charting', () => {
   it('"pause" turns continuous charting off, and a value after a completed station no longer advances', () => {
-    let session = createInitialSession({ autoAdvance: true });
+    let session = startSession({ autoAdvance: true });
     expect(session.settings.autoAdvance).toBe(true);
 
     session = processUtterance(session, input('pause'));
@@ -35,7 +41,7 @@ describe('voice control of continuous charting', () => {
   });
 
   it('"start" turns continuous charting back on, and the next measurement after a completed station advances lazily', () => {
-    let session = createInitialSession({ autoAdvance: false });
+    let session = startSession({ autoAdvance: false });
 
     session = processUtterance(session, input('start'));
     expect(session.settings.autoAdvance).toBe(true);

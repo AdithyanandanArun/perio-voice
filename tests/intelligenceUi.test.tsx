@@ -68,7 +68,7 @@ describe('full-mouth workflow controls', () => {
     const progress = screen.getByRole('progressbar', { name: 'Full-mouth charting progress' });
     expect(progress).toHaveAttribute('aria-valuemax', '192');
     expect(progress).toHaveAttribute('aria-valuenow', '0');
-    expect(screen.getByText(/upper left · tooth 14 buccal/i)).toBeInTheDocument();
+    expect(screen.getByText(/upper right · tooth 1 buccal/i)).toBeInTheDocument();
   });
 
   it('advances, steps back, and reports progress as sites are charted', async () => {
@@ -81,16 +81,16 @@ describe('full-mouth workflow controls', () => {
 
     const workflow = screen.getByRole('region', { name: 'Full-mouth workflow' });
     await user.click(within(workflow).getByRole('button', { name: /next tooth/i }));
-    expect(within(workflow).getByText(/tooth 15 buccal/i)).toBeInTheDocument();
+    expect(within(workflow).getByText(/tooth 2 buccal/i)).toBeInTheDocument();
     await user.click(within(workflow).getByRole('button', { name: /previous tooth/i }));
-    expect(within(workflow).getByText(/tooth 14 buccal/i)).toBeInTheDocument();
+    expect(within(workflow).getByText(/tooth 1 buccal/i)).toBeInTheDocument();
   });
 
   it('marks a tooth absent and says so', async () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole('button', { name: /skip tooth/i }));
-    expect(screen.getByText(/marked absent: 14/i)).toBeInTheDocument();
+    expect(screen.getByText(/marked absent: 1/i)).toBeInTheDocument();
   });
 
   it('enables undo only once there is something to reverse', async () => {

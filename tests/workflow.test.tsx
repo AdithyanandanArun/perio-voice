@@ -47,7 +47,7 @@ describe('clinician workflow', () => {
     const table = screen.getByRole('table');
     const rows = within(table).getAllByRole('row');
     expect(rows).toHaveLength(3);
-    expect(within(rows[1]).getByText('14')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('1')).toBeInTheDocument();
     expect(within(rows[2]).getByText('15')).toBeInTheDocument();
     expect(within(rows[2]).getByText('lingual')).toBeInTheDocument();
   });

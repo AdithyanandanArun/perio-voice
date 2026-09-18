@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { createInitialSession, currentRecord, processUtterance } from '../src/domain/clinicalEngine';
+import { createInitialSession, currentRecord, processUtterance, updateContext } from '../src/domain/clinicalEngine';
 import { recordAt } from '../src/domain/chart';
 import { percentile } from '../src/domain/session';
-import type { ClinicalSession, SpeakerVerdict, StageName, UtteranceInput } from '../src/domain/types';
+import type { ClinicalSession, SessionSettings, SpeakerVerdict, StageName, UtteranceInput } from '../src/domain/types';
+
+// These cases were authored assuming a session starts at tooth 14 buccal;
+// pin that explicitly since a new session now starts at tooth 1 buccal.
+function startSession(settings: Partial<SessionSettings> = {}): ClinicalSession {
+  return updateContext(createInitialSession(settings), { tooth: 14, surface: 'buccal' }, -1);
+}
 
 function input(transcript: string, overrides: Partial<UtteranceInput> = {}): UtteranceInput {
   return {
@@ -151,7 +157,7 @@ describe('multi-intent utterances', () => {
   });
 
   it('records both graded findings on the tooth, not the surface', () => {
-    const session = processUtterance(createInitialSession(), input('mobility two furcation class one'));
+    const session = processUtterance(startSession(), input('mobility two furcation class one'));
     expect(session.teeth[14]).toMatchObject({ mobility: 2, furcation: 1 });
   });
 });
@@ -159,20 +165,20 @@ describe('multi-intent utterances', () => {
 describe('auto advance', () => {
   it('stays put when explicitly disabled, so a single station can be reviewed', () => {
     const session = processUtterance(
-      createInitialSession({ autoAdvance: false }),
+      startSession({ autoAdvance: false }),
       input('three four five'),
     );
     expect(session.context.tooth).toBe(14);
 
     // Continuous charting is the default now, but a completed station is still
     // left behind only once, never eagerly on the same utterance that filled it.
-    const defaultSession = processUtterance(createInitialSession(), input('three four five'));
+    const defaultSession = processUtterance(startSession(), input('three four five'));
     expect(defaultSession.context.tooth).toBe(14);
   });
 
   it('leaves a finished station only when the next values arrive', () => {
     let session = processUtterance(
-      createInitialSession({ autoAdvance: true }),
+      startSession({ autoAdvance: true }),
       input('three four five'),
     );
     // The station is complete but the cursor has not moved yet, so a finding or

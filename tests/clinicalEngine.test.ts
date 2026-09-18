@@ -9,11 +9,18 @@ import {
 
 const timing = (startedAt = 100, observedAt = 140) => ({ startedAt, observedAt });
 
+// These cases were authored assuming a session starts at tooth 14 buccal;
+// pin that explicitly since a new session now starts at tooth 1 buccal
+// (the first station of the full-mouth sweep — see initialStation.test.ts).
+function startSession() {
+  return updateContext(createInitialSession(), { tooth: 14, surface: 'buccal' }, -1);
+}
+
 describe('clinicalEngine', () => {
-  it('starts in the specified tooth 14 buccal three-site context', () => {
+  it('starts a new exam at tooth 1 buccal, the first station of the sweep', () => {
     const session = createInitialSession();
     expect(session.context).toMatchObject({
-      tooth: 14,
+      tooth: 1,
       surface: 'buccal',
       measurement: 'probing_depth',
       expectedValues: 3,
@@ -76,7 +83,7 @@ describe('clinicalEngine', () => {
   });
 
   it('preserves independent chart records while moving between contexts', () => {
-    let session = applyTranscript(createInitialSession(), 'three four five', timing());
+    let session = applyTranscript(startSession(), 'three four five', timing());
     session = updateContext(session, { tooth: 15, surface: 'lingual' }, 200);
     session = applyTranscript(session, 'two three four', timing(220, 260));
     session = updateContext(session, { tooth: 14, surface: 'buccal' }, 300);

@@ -2,7 +2,7 @@
 
 import { emptyRecord, chartKey } from './chart';
 import { applyChanges, type ChartState } from './journal';
-import { createWorkflow } from './workflow';
+import { createWorkflow, STATION_ORDER } from './workflow';
 import type {
   ChartChange,
   ClinicalContext,
@@ -22,7 +22,12 @@ export const DEFAULT_SETTINGS: SessionSettings = {
   requireSpeaker: false,
 };
 
-export const INITIAL_TOOTH = 14;
+// A new exam starts at the first station of the full-mouth sweep, not an
+// arbitrary tooth. Deriving it from STATION_ORDER means the starting point
+// can never drift out of step with the order the workflow charts.
+export const INITIAL_STATION = STATION_ORDER[0];
+export const INITIAL_TOOTH = INITIAL_STATION.tooth;
+export const INITIAL_SURFACE = INITIAL_STATION.surface;
 export const MAX_HISTORY = 100;
 export const MAX_JOURNAL = 500;
 export const MAX_LATENCY_SAMPLES = 200;
@@ -32,7 +37,7 @@ export function createInitialSession(
 ): ClinicalSession {
   const context: ClinicalContext = {
     tooth: INITIAL_TOOTH,
-    surface: 'buccal',
+    surface: INITIAL_SURFACE,
     measurement: 'probing_depth',
     expectedValues: 3,
     position: 0,
@@ -41,6 +46,8 @@ export function createInitialSession(
   return {
     settings: { ...DEFAULT_SETTINGS, ...settings },
     context,
+    // stationIndex 0 keeps the workflow's position in the sweep consistent
+    // with the context above (both derived from STATION_ORDER[0]).
     workflow: createWorkflow(context.tooth, context.surface),
     charts: { [chartKey(context.tooth, context.surface)]: emptyRecord(context.tooth, context.surface) },
     teeth: {},

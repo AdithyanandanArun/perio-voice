@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { createInitialSession, currentRecord, processUtterance } from '../src/domain/clinicalEngine';
+import { createInitialSession, currentRecord, processUtterance, updateContext } from '../src/domain/clinicalEngine';
 import { recordAt } from '../src/domain/chart';
 import type { UtteranceInput } from '../src/domain/types';
+
+// This case was authored assuming a session starts at tooth 14 buccal; pin
+// that explicitly since a new session now starts at tooth 1 buccal.
+function startSession() {
+  return updateContext(createInitialSession(), { tooth: 14, surface: 'buccal' }, -1);
+}
 
 function input(transcript: string): UtteranceInput {
   return {
@@ -103,7 +109,7 @@ describe('shadow relevance lets everything through, including non_chartable', ()
 
 describe('continuous charting advances lazily', () => {
   it('leaves a finished station only when the next measurement arrives, by default', () => {
-    let session = processUtterance(createInitialSession(), input('three four five'));
+    let session = processUtterance(startSession(), input('three four five'));
     // Station is complete but the cursor has not moved: a finding or correction
     // spoken next still belongs to the tooth just charted.
     expect(session.context.tooth).toBe(14);

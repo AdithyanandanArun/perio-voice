@@ -15,6 +15,14 @@ import { loadDomain } from './lib/domain.mjs';
 const CORPUS = 'evaluation/corpus/clinical.json';
 const TRANSCRIPT_SCHEMA_VERSION = 1;
 
+// The corpora were authored at tooth 14 buccal; this pins that instead of
+// inheriting the product default. Most scenarios in evaluation/corpus/clinical.json
+// and evaluation/fixtures/dental/phrases.json declare no explicit `start` and their
+// expectations assume tooth 14 buccal (e.g. "tooth 14 buccal probingDepths"). The
+// product's own new-exam default is the first station of the full-mouth sweep
+// (src/domain/session.ts), which is intentionally a different tooth.
+export const HARNESS_DEFAULT_START = { tooth: 14, surface: 'buccal' };
+
 /** Acceptance thresholds. A change that crosses one of these has to be argued for. */
 const THRESHOLDS = {
   exactMatch: 0.95,
@@ -83,7 +91,20 @@ function checkCase(domain, testCase, relevanceMode) {
   }
   let session = domain.createInitialSession(settings);
   if (testCase.start) {
+    // An explicit start is a scenario testing navigation: replay it as a real
+    // jump from the product's own starting station, exactly as before.
     session = domain.updateContext(session, testCase.start, -1);
+  } else {
+    // No explicit start: the scenario was authored assuming it began there
+    // natively, not that the clinician navigated there. Set it directly so no
+    // jump artifact (resumeStack entry, manual mode) leaks into the replay.
+    const tooth = HARNESS_DEFAULT_START.tooth;
+    const surface = HARNESS_DEFAULT_START.surface;
+    session = {
+      ...session,
+      context: { ...session.context, tooth, surface },
+      workflow: { stationIndex: domain.stationIndexOf(tooth, surface), mode: 'sequential', skipped: [], resumeStack: [] },
+    };
   }
 
   let falseEntries = 0;
