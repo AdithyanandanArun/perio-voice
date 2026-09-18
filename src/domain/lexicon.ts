@@ -21,7 +21,7 @@
 import dentalPromptFile from '../../shared/dental-prompt.json';
 import { normalizeText } from './text';
 
-export const LEXICON_VERSION = '2026.09.1';
+export const LEXICON_VERSION = '2026.09.2';
 
 export type LexiconCategory =
   | 'finding'
