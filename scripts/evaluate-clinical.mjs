@@ -422,6 +422,17 @@ function validateTranscriptReport(value, source) {
     if (result.audioMs !== undefined && (!Number.isInteger(result.audioMs) || result.audioMs < 1)) {
       schemaError(source, `${location}.audioMs`, 'must be a positive integer when present');
     }
+    // A live stream can end one recording in several finals -- the endpointer may
+    // cut speech, or a sound after it may become its own utterance. The pipeline
+    // sees each as a separate utterance, so scoring them joined would hide both.
+    let finals = null;
+    if (result.finals !== undefined) {
+      if (!Array.isArray(result.finals) || result.finals.length === 0
+        || result.finals.some((text) => typeof text !== 'string')) {
+        schemaError(source, `${location}.finals`, 'must be a non-empty array of strings when present');
+      }
+      finals = result.finals;
+    }
     const identity = `${pass}\u0000${utteranceId}`;
     if (resultByIdentity.has(identity)) {
       schemaError(source, location, `duplicates pass '${pass}' and utterance '${utteranceId}'`);
@@ -436,6 +447,7 @@ function validateTranscriptReport(value, source) {
       averageLogProbability,
       decodeMs: result.decodeMs,
       audioMs: result.audioMs,
+      finals,
     };
     resultByIdentity.set(identity, normalized);
     return normalized;
@@ -475,10 +487,11 @@ function transcriptCases(validated) {
     start: scenario.start,
     settings: scenario.settings,
     expect: scenario.expect,
-    utterances: scenario.utterances.map((utterance) => {
+    utterances: scenario.utterances.flatMap((utterance) => {
       const result = validated.resultByIdentity.get(`${pass}\u0000${utterance.id}`);
-      return {
-        text: result.transcript,
+      const texts = result.finals ?? [result.transcript];
+      return texts.map((text) => ({
+        text,
         chartable: utterance.chartable,
         // A recording made with one voice cannot carry who is speaking, so the
         // manifest declares it, as the transcript corpus does. Dropping it here
@@ -489,7 +502,7 @@ function transcriptCases(validated) {
         averageLogProbability: result.averageLogProbability,
         decodeMs: result.decodeMs,
         audioMs: result.audioMs,
-      };
+      }));
     }),
   })));
 }
