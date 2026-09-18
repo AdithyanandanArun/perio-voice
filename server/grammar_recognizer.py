@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,184 @@ def _to_pcm_bytes(audio: FloatAudio) -> bytes:
 
     clipped = np.clip(audio, -1.0, 1.0)
     return (clipped * 32_767.0).astype("<i2").tobytes()
+
+
+def _clean_tokens(raw: object) -> tuple[str, int, int]:
+    """Remove the explicit unknown marker before text reaches the pipeline."""
+    tokens = str(raw or "").split()
+    unknown = sum(1 for token in tokens if token == UNKNOWN_TOKEN)
+    cleaned = " ".join(token for token in tokens if token != UNKNOWN_TOKEN).strip()
+    return cleaned, unknown, len(tokens)
+
+
+@dataclass(frozen=True, slots=True)
+class _ParsedGrammarResult:
+    result: RecognitionResult
+    unknown_tokens: int
+    token_count: int
+
+
+class VoskGrammarSession:
+    """An isolated incremental Vosk decoder for one speech segment.
+
+    Each session owns its ``KaldiRecognizer``.  PCM frames can therefore be
+    accepted while speech is in progress and the session can be finalized
+    without touching Faster-Whisper's GPU decode lock.  The async methods run
+    the small C++ calls off the event loop; ``*_sync`` methods are available to
+    a worker that already runs outside the loop.
+    """
+
+    def __init__(
+        self,
+        recognizer: Any,
+        *,
+        sample_rate: int,
+        max_alternatives: int,
+    ) -> None:
+        self._recognizer = recognizer
+        self._sample_rate = sample_rate
+        self._max_alternatives = max_alternatives
+        self._lock = threading.Lock()
+        self._closed = False
+        self._final: RecognitionResult | None = None
+        self._completed: list[_ParsedGrammarResult] = []
+
+    @property
+    def finalized(self) -> bool:
+        return self._final is not None
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def _require_open(self) -> Any:
+        if self._closed:
+            raise RuntimeError("The grammar session is closed.")
+        if self._final is not None:
+            raise RuntimeError("The grammar session has already been finalized.")
+        return self._recognizer
+
+    def _result(
+        self,
+        payload: dict[str, Any],
+        *,
+        partial: bool,
+        started: float,
+    ) -> _ParsedGrammarResult:
+        alternatives: tuple[Alternative, ...] = ()
+        if "alternatives" in payload:
+            ranked = [entry for entry in payload["alternatives"] if isinstance(entry, dict)]
+            alternatives = tuple(
+                Alternative(
+                    text=_clean_tokens(entry.get("text", ""))[0],
+                    confidence=round(float(entry.get("confidence", 0.0)), 4),
+                )
+                for entry in ranked
+            )
+            payload = ranked[0] if ranked else {"text": ""}
+
+        raw_text = payload.get("partial", "") if partial else payload.get("text", "")
+        text, unknown, token_count = _clean_tokens(raw_text)
+        spoken = [
+            entry
+            for entry in payload.get("result", [])
+            if isinstance(entry, dict) and entry.get("word")
+        ]
+        words = tuple(
+            WordTiming(
+                word=str(entry["word"]),
+                start_ms=round(float(entry.get("start", 0.0)) * 1_000),
+                end_ms=round(float(entry.get("end", 0.0)) * 1_000),
+                probability=round(float(entry.get("conf", 0.0)), 4),
+            )
+            for entry in spoken
+            if str(entry["word"]) != UNKNOWN_TOKEN
+        )
+        return _ParsedGrammarResult(
+            result=RecognitionResult(
+                text=text,
+                decode_ms=round((time.perf_counter() - started) * 1_000),
+                words=() if partial else words,
+                unknown_ratio=(unknown / token_count) if token_count else 1.0,
+                engine="grammar",
+                alternatives=alternatives,
+            ),
+            unknown_tokens=unknown,
+            token_count=token_count,
+        )
+
+    def _aggregate(
+        self,
+        current: _ParsedGrammarResult | None,
+        *,
+        partial: bool,
+        started: float,
+    ) -> RecognitionResult:
+        items = [*self._completed]
+        if current is not None:
+            items.append(current)
+        text = " ".join(item.result.text for item in items if item.result.text).strip()
+        words = tuple(word for item in items for word in item.result.words)
+        unknown = sum(item.unknown_tokens for item in items)
+        token_count = sum(item.token_count for item in items)
+        alternatives = current.result.alternatives if current is not None else ()
+        return RecognitionResult(
+            text=text,
+            decode_ms=round((time.perf_counter() - started) * 1_000),
+            words=() if partial else words,
+            unknown_ratio=(unknown / token_count) if token_count else 1.0,
+            engine="grammar",
+            alternatives=alternatives,
+        )
+
+    def feed_pcm_sync(self, pcm: bytes) -> RecognitionResult:
+        """Consume one PCM16 frame and return the current partial/result text."""
+        if not isinstance(pcm, bytes):
+            pcm = bytes(pcm)
+        if not pcm:
+            raise ValueError("Grammar PCM must not be empty.")
+        if len(pcm) % 2:
+            raise ValueError("Grammar PCM16 must contain complete samples.")
+        with self._lock:
+            recognizer = self._require_open()
+            started = time.perf_counter()
+            completed = bool(recognizer.AcceptWaveform(pcm))
+            payload = json.loads(recognizer.Result() if completed else recognizer.PartialResult())
+            if not isinstance(payload, dict):
+                payload = {}
+            parsed = self._result(payload, partial=not completed, started=started)
+            if completed:
+                self._completed.append(parsed)
+                return self._aggregate(None, partial=False, started=started)
+            return self._aggregate(parsed, partial=True, started=started)
+
+    def finalize_sync(self) -> RecognitionResult:
+        """Flush Vosk immediately and return the one final grammar result."""
+        with self._lock:
+            if self._final is not None:
+                return self._final
+            recognizer = self._require_open()
+            started = time.perf_counter()
+            payload = json.loads(recognizer.FinalResult())
+            if not isinstance(payload, dict):
+                payload = {}
+            parsed = self._result(payload, partial=False, started=started)
+            self._final = self._aggregate(parsed, partial=False, started=started)
+            return self._final
+
+    async def feed_pcm(self, pcm: bytes) -> RecognitionResult:
+        """Async PCM entry point for live sessions."""
+        return await asyncio.to_thread(self.feed_pcm_sync, pcm)
+
+    async def finalize(self) -> RecognitionResult:
+        """Async finalization that does not wait for a large-model decode."""
+        return await asyncio.to_thread(self.finalize_sync)
+
+    def close(self) -> None:
+        """Release the C++ recognizer; final results remain available."""
+        with self._lock:
+            self._closed = True
+            self._recognizer = None
 
 
 class VoskGrammarRecognizer:
@@ -59,6 +239,33 @@ class VoskGrammarRecognizer:
     def set_expectation(self, expectation: Expectation) -> None:
         """Narrows the grammar to what the active clinical context expects."""
         self._expectation = expectation
+
+    def start_session(self, expectation: Expectation | None = None) -> VoskGrammarSession:
+        """Create an isolated incremental session for the current context."""
+        if self.status is not ModelStatus.READY or self._model is None:
+            raise RuntimeError("The grammar recognition model is not ready.")
+        selected = self._expectation if expectation is None else expectation
+        from vosk import KaldiRecognizer
+
+        recognizer = KaldiRecognizer(
+            self._model,
+            self.settings.sample_rate,
+            json.dumps(list(grammar_for(selected))),
+        )
+        recognizer.SetWords(True)
+        if self.settings.max_alternatives > 1:
+            recognizer.SetMaxAlternatives(self.settings.max_alternatives)
+        return VoskGrammarSession(
+            recognizer,
+            sample_rate=self.settings.sample_rate,
+            max_alternatives=self.settings.max_alternatives,
+        )
+
+    async def open_session(self, expectation: Expectation | None = None) -> VoskGrammarSession:
+        """Load lazily, then open a session for async streaming callers."""
+        if self.status is not ModelStatus.READY:
+            await self.load()
+        return self.start_session(expectation)
 
     async def load(self) -> None:
         async with self._load_lock:
@@ -114,67 +321,24 @@ class VoskGrammarRecognizer:
         os.close(read_fd)
         return "missing in vocabulary" not in captured
 
-    async def transcribe(self, audio: FloatAudio, *, partial: bool) -> RecognitionResult:
+    async def transcribe(
+        self,
+        audio: FloatAudio,
+        *,
+        partial: bool,
+        beam_size: int | None = None,
+    ) -> RecognitionResult:
         if self.status is not ModelStatus.READY or self._model is None:
             raise RuntimeError("The grammar recognition model is not ready.")
         return await asyncio.to_thread(self._transcribe_sync, audio, partial)
 
     def _transcribe_sync(self, audio: FloatAudio, partial: bool) -> RecognitionResult:
-        from vosk import KaldiRecognizer
-
-        started = time.perf_counter()
-        recognizer = KaldiRecognizer(
-            self._model,
-            self.settings.sample_rate,
-            json.dumps(list(grammar_for(self._expectation))),
-        )
-        recognizer.SetWords(True)
-        if not partial and self.settings.max_alternatives > 1:
-            recognizer.SetMaxAlternatives(self.settings.max_alternatives)
-        recognizer.AcceptWaveform(_to_pcm_bytes(audio))
-        payload = json.loads(recognizer.FinalResult())
-
-        # With alternatives enabled Vosk returns a ranked list instead of a
-        # single result, and only the best one carries word timings.
-        alternatives: tuple[Alternative, ...] = ()
-        if "alternatives" in payload:
-            ranked = [entry for entry in payload["alternatives"] if isinstance(entry, dict)]
-            alternatives = tuple(
-                Alternative(
-                    text=" ".join(
-                        token
-                        for token in str(entry.get("text", "")).split()
-                        if token != UNKNOWN_TOKEN
-                    ).strip(),
-                    confidence=round(float(entry.get("confidence", 0.0)), 4),
-                )
-                for entry in ranked
-            )
-            payload = ranked[0] if ranked else {"text": ""}
-
-        spoken = [
-            entry
-            for entry in payload.get("result", [])
-            if isinstance(entry, dict) and entry.get("word")
-        ]
-        words = tuple(
-            WordTiming(
-                word=str(entry["word"]),
-                start_ms=round(float(entry.get("start", 0.0)) * 1_000),
-                end_ms=round(float(entry.get("end", 0.0)) * 1_000),
-                probability=round(float(entry.get("conf", 0.0)), 4),
-            )
-            for entry in spoken
-            if str(entry["word"]) != UNKNOWN_TOKEN
-        )
-        tokens = str(payload.get("text", "")).split()
-        unknown = sum(1 for token in tokens if token == UNKNOWN_TOKEN)
-        text = " ".join(token for token in tokens if token != UNKNOWN_TOKEN).strip()
-        return RecognitionResult(
-            text=text,
-            decode_ms=round((time.perf_counter() - started) * 1_000),
-            words=() if partial else words,
-            unknown_ratio=(unknown / len(tokens)) if tokens else 1.0,
-            engine="grammar",
-            alternatives=alternatives,
-        )
+        session = self.start_session()
+        try:
+            pcm = _to_pcm_bytes(audio)
+            if partial:
+                return session.feed_pcm_sync(pcm)
+            session.feed_pcm_sync(pcm)
+            return session.finalize_sync()
+        finally:
+            session.close()

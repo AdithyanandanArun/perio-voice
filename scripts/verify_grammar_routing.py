@@ -51,6 +51,10 @@ def load_clip(path: Path, sample_rate: int) -> NDArray[np.float32]:
     return out
 
 
+def to_pcm16(audio: NDArray[np.float32]) -> bytes:
+    return (np.clip(audio, -1.0, 1.0) * 32_767.0).astype("<i2").tobytes()
+
+
 async def main() -> int:
     settings = Settings.from_env()
     truth: dict[str, str] = json.loads((FIXTURE / "truth.json").read_text(encoding="utf-8"))
@@ -102,6 +106,26 @@ async def main() -> int:
     grammar = VoskGrammarRecognizer(settings)
     await grammar.load()
     grammar.set_expectation(Expectation.DEPTHS)
+
+    # The live fast path keeps one Kaldi recognizer per speech segment. Feed a
+    # clip in two chunks, then flush it immediately; this must agree with the
+    # one-shot API and must not touch the Whisper route or lock.
+    incremental_clip = load_clip(FIXTURE / "audio" / "s1.wav", settings.sample_rate)
+    incremental_pcm = to_pcm16(incremental_clip)
+    split = (len(incremental_pcm) // 2) & ~1
+    incremental = grammar.start_session(Expectation.DEPTHS)
+    await incremental.feed_pcm(incremental_pcm[:split])
+    await incremental.feed_pcm(incremental_pcm[split:])
+    incremental_result = await incremental.finalize()
+    incremental.close()
+    if incremental_result.text.strip() != truth["s1"]:
+        failures.append(
+            f"incremental grammar session returned {incremental_result.text.strip()!r} "
+            f"for {truth['s1']!r}"
+        )
+    if not incremental.finalized:
+        failures.append("incremental grammar session did not become finalized")
+
     for utterance_id in ("n1", "n2"):
         clip = load_clip(FIXTURE / "audio" / f"{utterance_id}.wav", settings.sample_rate)
         result = await grammar.transcribe(clip, partial=False)

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from server.audio import FloatAudio
 from server.config import Settings
-from server.grammar_recognizer import VoskGrammarRecognizer
+from server.grammar_recognizer import VoskGrammarRecognizer, VoskGrammarSession
 from server.recognizer import (
     FasterWhisperRecognizer,
     ModelStatus,
@@ -47,6 +47,8 @@ class RoutedRecognizer:
             self.model_name = f"{self._grammar.model_name} + {self._whisper.model_name}"
         self.device = self._whisper.device
         self.compute_type = self._whisper.compute_type
+        self.runtime_profile = getattr(self._whisper, "runtime_profile", None)
+        self.cuda_capabilities = getattr(self._whisper, "cuda_capabilities", None)
 
     # -- recognizer protocol surface -------------------------------------------------
 
@@ -86,6 +88,52 @@ class RoutedRecognizer:
         if errors:
             raise RuntimeError(self.error)
 
+    @property
+    def warmup(self) -> object:
+        """Warmup metadata for the active route, without retaining any audio."""
+        active = self._active_engines()
+        if len(active) == 1:
+            return getattr(active[0], "warmup", None)
+        return tuple(getattr(engine, "warmup", None) for engine in active)
+
+    @property
+    def runtime_metadata(self) -> dict[str, object]:
+        """Route/model facts without exposing transcripts or audio."""
+        metadata: dict[str, object] = {
+            "model": self.model_name,
+            "device": self.device,
+            "computeType": self.compute_type,
+            "warmup": self._warmup_metadata(self.warmup),
+        }
+        if self.runtime_profile is not None:
+            as_dict = getattr(self.runtime_profile, "as_dict", None)
+            metadata["profile"] = as_dict() if callable(as_dict) else self.runtime_profile
+        if self.cuda_capabilities is not None:
+            as_dict = getattr(self.cuda_capabilities, "as_dict", None)
+            metadata["cuda"] = as_dict() if callable(as_dict) else self.cuda_capabilities
+        return metadata
+
+    @classmethod
+    def _warmup_metadata(cls, value: object) -> object:
+        if isinstance(value, tuple):
+            return [cls._warmup_metadata(item) for item in value]
+        as_dict = getattr(value, "as_dict", None)
+        if callable(as_dict):
+            return as_dict()
+        return None
+
+    @property
+    def grammar(self) -> VoskGrammarRecognizer:
+        """Expose the separate CPU grammar engine without changing routing."""
+        return self._grammar
+
+    async def start_grammar_session(
+        self,
+        expectation: Expectation | None = None,
+    ) -> VoskGrammarSession:
+        """Open the isolated fast path, loading Vosk lazily on Whisper routes."""
+        return await self._grammar.open_session(expectation)
+
     # -- routing ---------------------------------------------------------------------
 
     @property
@@ -104,6 +152,16 @@ class RoutedRecognizer:
             return "grammar"
         return "whisper" if self._expectation is Expectation.FREE else "grammar"
 
-    async def transcribe(self, audio: FloatAudio, *, partial: bool) -> RecognitionResult:
+    async def transcribe(
+        self,
+        audio: FloatAudio,
+        *,
+        partial: bool,
+        beam_size: int | None = None,
+    ) -> RecognitionResult:
         chosen = self._whisper if self.route() == "whisper" else self._grammar
-        return await chosen.transcribe(audio, partial=partial)
+        if beam_size is None:
+            # Keep compatibility with injected recognizers used by the service
+            # tests; the optional override is only needed by sweep callers.
+            return await chosen.transcribe(audio, partial=partial)
+        return await chosen.transcribe(audio, partial=partial, beam_size=beam_size)

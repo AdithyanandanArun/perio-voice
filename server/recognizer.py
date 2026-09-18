@@ -52,6 +52,22 @@ class RecognitionResult:
     alternatives: tuple[Alternative, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class WarmupInfo:
+    """The readiness proof for one loaded model, without retaining audio/text."""
+
+    completed: bool
+    duration_ms: int | None
+    error: str | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "completed": self.completed,
+            "durationMs": self.duration_ms,
+            "error": self.error,
+        }
+
+
 class Recognizer(Protocol):
     model_name: str
     device: str
@@ -61,7 +77,13 @@ class Recognizer(Protocol):
 
     async def load(self) -> None: ...
 
-    async def transcribe(self, audio: FloatAudio, *, partial: bool) -> RecognitionResult: ...
+    async def transcribe(
+        self,
+        audio: FloatAudio,
+        *,
+        partial: bool,
+        beam_size: int | None = None,
+    ) -> RecognitionResult: ...
 
 
 class FasterWhisperRecognizer:
@@ -79,11 +101,36 @@ class FasterWhisperRecognizer:
         self.bias_prompt = settings.bias_prompt
         self.word_timestamps = settings.word_timestamps
         self.beam_size = settings.beam_size
+        self.runtime_profile = settings.runtime_profile
+        self.cuda_capabilities = settings.cuda_capabilities
         self.status = ModelStatus.IDLE
         self.error: str | None = None
+        self.warmup = WarmupInfo(completed=False, duration_ms=None)
         self._model: object | None = None
         self._load_lock = asyncio.Lock()
         self._decode_lock = asyncio.Lock()
+
+    @property
+    def runtime_metadata(self) -> dict[str, object]:
+        """Read-only model/profile facts suitable for health output."""
+        metadata: dict[str, object] = {
+            "model": self.model_name,
+            "device": self.device,
+            "computeType": self.compute_type,
+            "profile": self.runtime_profile.as_dict(),
+            "warmup": self.warmup.as_dict(),
+        }
+        if self.cuda_capabilities is not None:
+            metadata["cuda"] = self.cuda_capabilities.as_dict()
+        return metadata
+
+    @property
+    def warmup_completed(self) -> bool:
+        return self.warmup.completed
+
+    @property
+    def warmup_ms(self) -> int | None:
+        return self.warmup.duration_ms
 
     async def load(self) -> None:
         async with self._load_lock:
@@ -91,9 +138,21 @@ class FasterWhisperRecognizer:
                 return
             self.status = ModelStatus.LOADING
             self.error = None
+            self.warmup = WarmupInfo(completed=False, duration_ms=None)
             try:
                 self._model = await asyncio.to_thread(self._load_sync)
+                started = time.perf_counter()
+                await asyncio.to_thread(self._warmup_sync)
+                self.warmup = WarmupInfo(
+                    completed=True,
+                    duration_ms=round((time.perf_counter() - started) * 1_000),
+                )
             except Exception as exc:
+                self.warmup = WarmupInfo(
+                    completed=False,
+                    duration_ms=None,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
                 self.status = ModelStatus.ERROR
                 self.error = f"{type(exc).__name__}: {exc}"
                 raise
@@ -116,32 +175,95 @@ class FasterWhisperRecognizer:
             local_files_only=False,
         )
 
-    async def transcribe(self, audio: FloatAudio, *, partial: bool) -> RecognitionResult:
+    def _warmup_sync(self) -> None:
+        """Run one discarded inference so readiness includes CUDA allocation.
+
+        The warmup never enters ``transcribe`` or a session queue, so it cannot
+        increment utterance counters, emit a transcript, or be mistaken for
+        user speech. It uses the same model instance and decode options as a
+        partial, only with a short zero-valued PCM buffer.
+        """
+        import numpy as np
+
+        if self._model is None:
+            raise RuntimeError("The recognition model is not ready for warmup.")
+        audio = np.zeros(1_600, dtype=np.float32)
+        self._decode_model(audio, partial=True)
+
+    async def transcribe(
+        self,
+        audio: FloatAudio,
+        *,
+        partial: bool,
+        beam_size: int | None = None,
+    ) -> RecognitionResult:
         if self.status is not ModelStatus.READY or self._model is None:
             raise RuntimeError("The recognition model is not ready.")
+        if beam_size is not None and beam_size < 1:
+            raise ValueError("beam_size must be at least 1.")
         async with self._decode_lock:
-            return await asyncio.to_thread(self._transcribe_sync, audio, partial)
+            return await asyncio.to_thread(self._transcribe_sync, audio, partial, beam_size)
 
-    def _transcribe_sync(self, audio: FloatAudio, partial: bool) -> RecognitionResult:
+    def decoder_options(
+        self,
+        *,
+        partial: bool,
+        beam_size: int | None = None,
+    ) -> dict[str, object]:
+        """Return explicit faster-whisper options for reproducible beam sweeps.
+
+        The production path uses ``settings.beam_size``.  A caller may provide a
+        positive temporary beam without mutating the recognizer, which lets an
+        evaluation sweep compare decoder choices against the same loaded model.
+        """
+        selected_beam = self.beam_size if beam_size is None else beam_size
+        if selected_beam < 1:
+            raise ValueError("beam_size must be at least 1.")
+        return {
+            "language": self.language,
+            "beam_size": selected_beam,
+            "best_of": selected_beam,
+            "condition_on_previous_text": False,
+            "initial_prompt": (
+                (self.prompt_override or dental_prompt()) if self.bias_prompt else None
+            ),
+            "word_timestamps": self.word_timestamps and not partial,
+            "vad_filter": False,
+            "without_timestamps": partial or not self.word_timestamps,
+        }
+
+    def _decode_model(
+        self,
+        audio: FloatAudio,
+        *,
+        partial: bool,
+        beam_size: int | None = None,
+    ) -> None:
+        """Materialize one model decode and discard all warmup output."""
+        model = self._model
+        if model is None:
+            raise RuntimeError("The recognition model is not ready.")
+        segments, _ = model.transcribe(  # type: ignore[attr-defined]
+            audio,
+            **self.decoder_options(partial=partial, beam_size=beam_size),
+        )
+        # faster-whisper is lazy: calling ``transcribe`` alone does not execute
+        # the decoder or allocate the CUDA workspaces.
+        list(segments)
+
+    def _transcribe_sync(
+        self,
+        audio: FloatAudio,
+        partial: bool,
+        beam_size: int | None = None,
+    ) -> RecognitionResult:
         started = time.perf_counter()
         model = self._model
         if model is None:
             raise RuntimeError("The recognition model is not ready.")
         segments, _ = model.transcribe(  # type: ignore[attr-defined]
             audio,
-            language=self.language,
-            beam_size=self.beam_size,
-            best_of=self.beam_size,
-            # No temperature pin: leaving faster-whisper's default fallback in
-            # place lets a bad greedy decode retry instead of being returned.
-            condition_on_previous_text=False,
-            # Biasing costs nothing at decode time and is the cheapest available
-            # defence against a general model substituting everyday English for
-            # clinical vocabulary.
-            initial_prompt=(self.prompt_override or dental_prompt()) if self.bias_prompt else None,
-            word_timestamps=self.word_timestamps and not partial,
-            vad_filter=False,
-            without_timestamps=partial or not self.word_timestamps,
+            **self.decoder_options(partial=partial, beam_size=beam_size),
         )
         materialized = list(segments)
         text = " ".join(segment.text.strip() for segment in materialized).strip()

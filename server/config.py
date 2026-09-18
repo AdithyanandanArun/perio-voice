@@ -3,9 +3,74 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from server.denoise import DenoiseProfile, parse_profile
 from server.routing import Engine, parse_engine
+
+if TYPE_CHECKING:
+    from server.cuda_runtime import CudaCapabilities
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeProfile:
+    """Declared inference profile, separate from operator overrides.
+
+    The profile describes the tested baseline.  Individual ``ASR_*`` values in
+    :class:`Settings` remain authoritative, so the metadata can say which
+    profile was selected without hiding a deliberate override.
+    """
+
+    name: str
+    device: str
+    model_name: str
+    compute_type: str
+    engine: Engine
+    minimum_vram_mib: int | None = None
+    estimated_vram_mib: int | None = None
+    compute_capability: str | None = None
+
+    @property
+    def min_vram_mib(self) -> int | None:
+        """Short alias for callers that use the capability terminology."""
+        return self.minimum_vram_mib
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "name": self.name,
+            "device": self.device,
+            "model": self.model_name,
+            "computeType": self.compute_type,
+            "engine": self.engine.value,
+            "minimumVramMiB": self.minimum_vram_mib,
+            "estimatedVramMiB": self.estimated_vram_mib,
+            "computeCapability": self.compute_capability,
+        }
+
+
+CPU_RUNTIME_PROFILE = RuntimeProfile(
+    name="cpu-reference",
+    device="cpu",
+    model_name="tiny.en",
+    compute_type="int8",
+    engine=Engine.AUTO,
+)
+
+# The target workstation class has 4096 MiB. The measured large-v3
+# int8_float16 footprint is about 3.2 GiB, leaving headroom for the service and
+# CUDA runtime. Hardware compute capability is detected and reported separately
+# so this generic profile remains valid across 4GB+ CUDA devices.
+CUDA_4GB_RUNTIME_PROFILE = RuntimeProfile(
+    name="cuda-4gb-large-v3",
+    device="cuda",
+    model_name="large-v3",
+    compute_type="int8_float16",
+    engine=Engine.WHISPER,
+    minimum_vram_mib=4_096,
+    estimated_vram_mib=3_200,
+    # Hardware capability is detected at runtime and reported separately.
+    compute_capability=None,
+)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -72,6 +137,8 @@ class Settings:
     min_final_ms: int = 250
     """Competing readings returned per final, so clinical context can choose."""
     max_alternatives: int = 4
+    runtime_profile: RuntimeProfile = CPU_RUNTIME_PROFILE
+    cuda_capabilities: CudaCapabilities | None = None
     allowed_origins: tuple[str, ...] = (
         "http://127.0.0.1:5173",
         "http://localhost:5173",
@@ -119,6 +186,37 @@ class Settings:
     @property
     def endpoint_ceiling_ms(self) -> int:
         return max(self.max_end_silence_ms, self.end_silence_ms)
+
+    @property
+    def profile(self) -> RuntimeProfile:
+        """Compatibility alias for consumers that call the selection a profile."""
+        return self.runtime_profile
+
+    @property
+    def gpu_profile(self) -> RuntimeProfile:
+        """Alias used by runtime observers that distinguish GPU profiles."""
+        return self.runtime_profile
+
+    @property
+    def capability_metadata(self) -> dict[str, object]:
+        """Profile plus detected CUDA facts, safe to expose through health APIs."""
+        metadata: dict[str, object] = {
+            "profile": self.runtime_profile.as_dict(),
+            "effective": {
+                "device": self.device,
+                "model": self.model_name,
+                "computeType": self.compute_type,
+                "engine": self.engine.value,
+            },
+        }
+        if self.cuda_capabilities is not None:
+            metadata["cuda"] = self.cuda_capabilities.as_dict()
+        return metadata
+
+    @property
+    def runtime_metadata(self) -> dict[str, object]:
+        """Alias for API/telemetry consumers that call this runtime metadata."""
+        return self.capability_metadata
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -194,7 +292,7 @@ def service_settings() -> Settings:
     keep the CPU defaults, so a gate behaves the same on a laptop with a GPU as
     in CI without one. Any ASR_* variable set explicitly always wins.
     """
-    from server.cuda_runtime import cuda_available
+    from server.cuda_runtime import CudaCapabilities, cuda_available, cuda_capabilities
 
     settings = Settings.from_env()
 
@@ -206,10 +304,28 @@ def service_settings() -> Settings:
     if unset("ASR_SPEECH_PRESENCE_THRESHOLD"):
         settings = replace(settings, speech_presence_threshold=GPU_SPEECH_PRESENCE_THRESHOLD)
     requested = os.getenv("ASR_DEVICE", "auto").strip().lower()
-    if requested == "auto" and not cuda_available():
-        return replace(settings, device="cpu")
     if requested not in {"auto", "cuda"}:
         return settings
+    available = cuda_available()
+
+    # Capability lookup is cached and has no effect on route selection.  Keep a
+    # truthful object even when tests/operators explicitly force ASR_DEVICE=cuda
+    # on a host whose CUDA runtime is not usable.
+    detected = cuda_capabilities()
+    if not available and detected.available:
+        detected = CudaCapabilities(
+            available=False,
+            device_count=detected.device_count,
+            device_name=detected.device_name,
+            memory_mib=detected.memory_mib,
+            compute_capability=detected.compute_capability,
+            runtime_libraries=detected.runtime_libraries,
+            error="CUDA availability was overridden by the runtime check",
+        )
+    if requested == "auto" and (
+        not available or detected.memory_mib is None or detected.memory_mib < 4_096
+    ):
+        return replace(settings, device="cpu", cuda_capabilities=detected)
 
     return replace(
         settings,
@@ -232,4 +348,6 @@ def service_settings() -> Settings:
             if unset("ASR_NO_SPEECH_THRESHOLD")
             else settings.no_speech_threshold
         ),
+        runtime_profile=CUDA_4GB_RUNTIME_PROFILE,
+        cuda_capabilities=detected,
     )
