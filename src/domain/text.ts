@@ -14,6 +14,11 @@ export function normalizeText(value: string): string {
     .replace(DASHES, '-')
     .replace(APOSTROPHES, "'")
     .replace(/[^a-z0-9\s'-]/g, ' ')
+    // Large recognizers fuse letters and digits: "p d three four five" came back
+    // as "pd345", one token that is neither a word nor a number. Splitting at the
+    // boundary lets the lexicon read "pd" and the lattice read the digits.
+    .replace(/([a-z])(\d)/g, '$1 $2')
+    .replace(/(\d)([a-z])/g, '$1 $2')
     .replace(/\s+/g, ' ')
     .trim();
 }

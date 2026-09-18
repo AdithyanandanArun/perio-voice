@@ -105,6 +105,10 @@ const NEGATIVE_CUES: readonly CuePattern[] = [
 
 /** Words that are neither clinical anchors nor evidence of conversation. */
 const NEUTRAL = new Set([
+  // A function word, not evidence of conversation. Large recognizers also write
+  // a short "four" as "or", and "four no three" arrived as "or no three": scoring
+  // "or" as foreign vocabulary pushed a real correction into the held band.
+  'or',
   'that',
   'this',
   'it',

@@ -261,3 +261,23 @@ describe('recognizer alternatives', () => {
     expect(session.counters.nonChartable).toBe(1);
   });
 });
+
+describe('transcripts written by large recognizers', () => {
+  it('reads letters and digits a recognizer fused into one token', () => {
+    // Measured: "p d three four five" was written as "pd345".
+    const session = processUtterance(createInitialSession(), input('pd345.'));
+    expect(currentRecord(session).probingDepths).toEqual([3, 4, 5]);
+  });
+
+  it('keeps a correction whose first value was heard as "or"', () => {
+    // Measured: "four no three" was written as "or no three".
+    let session = processUtterance(createInitialSession(), input('three four five.'));
+    session = processUtterance(session, input('or no three.'));
+    expect(currentRecord(session).probingDepths).toEqual([3, 4, 3]);
+  });
+
+  it('still negates across "or" between findings', () => {
+    const session = processUtterance(createInitialSession(), input('no bleeding or suppuration.'));
+    expect(currentRecord(session)).toMatchObject({ bleeding: false, suppuration: false });
+  });
+});
