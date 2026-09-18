@@ -1,6 +1,8 @@
 import { LoaderCircle, ShieldCheck, ShieldOff, UserCheck } from 'lucide-react';
 import type { SpeakerVerdict } from '../domain/types';
 import type { EnrollmentState } from '../speech/protocol';
+import { ENROLLMENT_PASSAGES } from '../speech/enrollmentPassages';
+import { ENROLLMENT_SECONDS } from '../speech/useLocalAsr';
 
 interface SpeakerPanelProps {
   enrollment: EnrollmentState | null;
@@ -10,6 +12,7 @@ interface SpeakerPanelProps {
   onEnroll: () => void;
   onRevoke: () => void;
 }
+
 
 const DECISION_LABELS: Record<SpeakerVerdict['decision'], string> = {
   clinician: 'Enrolled clinician',
@@ -30,6 +33,8 @@ export function SpeakerPanel({
   onRevoke,
 }: SpeakerPanelProps) {
   const enrolled = enrollment?.enrolled === true;
+  const samples = enrollment?.samples ?? 0;
+  const passage = ENROLLMENT_PASSAGES[samples % ENROLLMENT_PASSAGES.length];
   return (
     <div className="speaker-panel" id="voice-profile" aria-labelledby="speaker-title">
       <div className="speaker-heading">
@@ -48,6 +53,15 @@ export function SpeakerPanel({
           <small>similarity {verdict.similarity.toFixed(3)}</small>
         </p>
       )}
+
+      <figure className="enroll-prompt" aria-live="polite">
+        <figcaption>
+          {enrolling
+            ? `Recording for ${ENROLLMENT_SECONDS} seconds — read this aloud now:`
+            : `Press “${enrolled ? 'Add another sample' : 'Enrol my voice'}”, then read this aloud at your normal pace:`}
+        </figcaption>
+        <blockquote>“{passage}”</blockquote>
+      </figure>
 
       <div className="speaker-actions">
         <button
@@ -69,8 +83,8 @@ export function SpeakerPanel({
         )}
       </div>
       <p className="helper-text">
-        Your profile is stored for this account by the local service. Read a sentence aloud for a
-        few seconds to enrol; you can revoke it at any time.
+        Your profile is stored for this account by the local service, and you can revoke it at any
+        time. Each extra sample asks for a different passage.
       </p>
     </div>
   );

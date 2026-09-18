@@ -455,3 +455,8 @@ tbody td { text-transform: capitalize; }
 .profile-page .workflow-settings input { width: 16px; height: 16px; margin-top: 1px; }
 .profile-page .workflow-settings span { font-size: 13px; }
 .profile-page .helper-text { margin: 14px 0 0; }
+
+/* The passage to read while an enrollment sample records. */
+.enroll-prompt { margin: 12px 0; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-left: 3px solid var(--primary); border-radius: 8px; }
+.enroll-prompt figcaption { color: var(--text-muted); font-size: 12px; }
+.enroll-prompt blockquote { margin: 6px 0 0; font-size: 15px; font-weight: 600; line-height: 1.5; }
