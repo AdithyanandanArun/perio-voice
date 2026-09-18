@@ -21,7 +21,6 @@ import {
   MIN_DEPTH_MM,
   MIN_RECESSION_MM,
   MIN_TOOTH,
-  SITES_PER_STATION,
   type ClinicalContext,
   type MeasurementType,
 } from './types';
@@ -107,7 +106,7 @@ export function deriveExpectation(
       : context.measurement;
   const toothMentioned = [...TOOTH_MARKERS].some((marker) => terms.has(marker));
   const gradeMentioned = [...GRADE_MARKERS].some((marker) => terms.has(marker));
-  const remainingSites = Math.max(0, SITES_PER_STATION - context.position);
+  const remainingSites = Math.max(0, context.expectedValues - context.position);
 
   const windows: ValueWindow[] = [];
   // An explicit measurement word re-opens the window even on a finished station,

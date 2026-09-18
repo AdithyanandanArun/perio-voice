@@ -121,7 +121,7 @@ an ambiguous word or a correction.
 ## Which recognizer, and why
 
 On a machine with a usable NVIDIA GPU the service runs **Whisper `large-v3`**
-(CUDA, `int8_float16` on this 4 GiB card) prompted with example transcriptions from
+(CUDA, float16) prompted with example transcriptions from
 `shared/dental-prompt.json`. Without one it falls back to the CPU stack described
 further down.
 
@@ -236,7 +236,7 @@ The service picks its recognizer at startup. With a usable GPU — a CUDA device
 ```bash
 ASR_DEVICE=cuda                 # auto (default) | cuda | cpu
 ASR_MODEL=large-v3
-ASR_COMPUTE_TYPE=int8_float16  # fits the 4 GiB GPU; use float16 on larger cards
+ASR_COMPUTE_TYPE=float16
 ASR_ENGINE=whisper
 ASR_WORD_TIMESTAMPS=0           # chart accuracy was measured without them
 ASR_SPEECH_PRESENCE_THRESHOLD=0.35   # Silero speech check before decoding; 0 disables

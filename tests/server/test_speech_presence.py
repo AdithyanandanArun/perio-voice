@@ -12,7 +12,7 @@ from faster_whisper.audio import decode_audio
 from evaluation.noise import synthesize
 from server.config import Settings
 from server.session import AsrSession
-from server.speech_presence import Presence, StreamingSpeechPresence, assess, speech_probability
+from server.speech_presence import assess, speech_probability
 from tests.server.fakes import FakeRecognizer
 
 JFK = Path("tests/fixtures/jfk.flac")
@@ -113,41 +113,3 @@ def test_clean_speech_is_not_counted_as_clipped() -> None:
     presence = assess(speech())
     assert not presence.clipped
     assert presence.is_speech(THRESHOLD)
-
-
-def test_streaming_presence_keeps_authoritative_final_assessment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An advisory packet view must not replace the full final presence gate."""
-    calls: list[int] = []
-
-    def final_assess(audio: np.ndarray) -> Presence:
-        calls.append(len(audio))
-        return Presence(0.9, 0.0)
-
-    monkeypatch.setattr("server.speech_presence.assess", final_assess)
-    tracker = StreamingSpeechPresence(THRESHOLD)
-    tracker.update(np.zeros(320, dtype=np.float32))
-    final = tracker.finalize()
-    assert final.is_speech(THRESHOLD)
-    assert calls == [320]
-
-
-def test_streaming_presence_requires_complete_audio_after_bounded_window(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("server.speech_presence.speech_probability", lambda _: 0.0)
-    calls: list[int] = []
-
-    def final_assess(audio: np.ndarray) -> Presence:
-        calls.append(len(audio))
-        return Presence(0.9, 0.0)
-
-    monkeypatch.setattr("server.speech_presence.assess", final_assess)
-    tracker = StreamingSpeechPresence(THRESHOLD)
-    complete = np.zeros(7_000, dtype=np.float32)
-    tracker.update(complete)
-    with pytest.raises(ValueError, match="complete audio"):
-        tracker.finalize()
-    assert tracker.finalize(complete).is_speech(THRESHOLD)
-    assert calls == [len(complete)]

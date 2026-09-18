@@ -12,7 +12,6 @@ export type {
   ClinicalContext,
   ClinicalEvent,
   ClinicalEventKind,
-  ClinicalEventProjection,
   ClinicalSession,
   ConfirmationReason,
   DepthTriple,
@@ -21,25 +20,15 @@ export type {
   MeasurementType,
   PendingConfirmation,
   PerioRecord,
-  ProjectionAction,
-  ProjectedChartChange,
-  ProjectedOverlay,
-  ProjectedTransaction,
   SessionSettings,
   SpeakerVerdict,
   StageName,
   StageTrace,
   Surface,
-  TransactionDecision,
-  TransactionIdentity,
-  TransactionLifecycle,
-  TransactionRecord,
   ToothRecord,
   UtteranceInput,
   WorkflowState,
 } from './types';
-
-export type { TransactionCheck } from './session';
 
 export { BINARY_FINDINGS, GRADED_FINDINGS, SITES_PER_STATION, SURFACE_SITES } from './types';
 
@@ -76,15 +65,6 @@ export {
   workflowProgress,
 } from './workflow';
 export { createInitialSession, latencySummary, percentile } from './session';
-export {
-  inspectTransaction,
-  MAX_TRANSACTIONS,
-  observedVersionOf,
-  rememberTransaction,
-  transactionIdentityForInput,
-  transactionKey,
-  transactionPayloadHash,
-} from './session';
 export { processUtterance } from './pipeline';
 export { processAutoChart, splitAutoChartClauses } from './autoChart';
 export {

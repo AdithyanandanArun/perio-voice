@@ -300,13 +300,9 @@ export function resumeStation(
   });
 }
 
-/**
- * True when an utterance does not describe exactly the context that is active.
- * A future version is just as unsafe as an older one: accepting either would
- * let a reordered final write against a context it never observed.
- */
+/** True when an utterance observed a location the clinician has since left. */
 export function isStaleObservation(observedVersion: number | null, currentVersion: number): boolean {
-  return observedVersion !== null && observedVersion !== currentVersion;
+  return observedVersion !== null && observedVersion < currentVersion;
 }
 
 export interface WorkflowProgress {

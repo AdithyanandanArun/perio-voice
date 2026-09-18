@@ -24,7 +24,7 @@ import {
   type MeasurementType,
   type PerioRecord,
 } from './types';
-import { lastFilledPosition, measurementValues, siteName } from './chart';
+import { lastFilledPosition, measurementValues, nextOpenPosition, siteName } from './chart';
 import type { FindingAssertion } from './negation';
 import type { Intent } from './grammar';
 
@@ -40,8 +40,7 @@ export type GuardCode =
   | 'site_out_of_range'
   | 'overwrite'
   | 'wrong_length'
-  | 'invalid_grade'
-  | 'missing_grade';
+  | 'invalid_grade';
 
 export interface GuardVerdict {
   outcome: GuardOutcome;
@@ -116,35 +115,33 @@ export function guardMeasurements(
     return accept([siteIndex]);
   }
 
-  const openPositions = measurementValues(record, measurement)
-    .map((value, index) => (value === null ? index : -1))
-    .filter((index) => index !== -1);
-  if (openPositions.length === 0) {
+  const position = nextOpenPosition(record, measurement);
+  if (position >= SITES_PER_STATION) {
     return reject(
       'station_complete',
       'The active three-site sequence is complete. Change context or say “repeat that” with three values.',
     );
   }
-  const remaining = openPositions.length;
+  const remaining = SITES_PER_STATION - position;
   if (values.length > remaining) {
     return reject(
       'overflow',
       `Expected ${remaining} more ${remaining === 1 ? 'value' : 'values'}; no depths were changed.`,
     );
   }
-  return accept(openPositions.slice(0, values.length));
+  return accept(values.map((_, offset) => position + offset));
 }
 
 export function guardReplacement(
   values: readonly number[],
   measurement: MeasurementType,
-  _context: ClinicalContext,
+  context: ClinicalContext,
 ): GuardVerdict {
   const [min, max] = valueRange(measurement);
-  if (values.length !== SITES_PER_STATION) {
+  if (values.length !== context.expectedValues) {
     return reject(
       'wrong_length',
-      `A replacement sequence must contain exactly ${SITES_PER_STATION} ${
+      `A replacement sequence must contain exactly ${context.expectedValues} ${
         measurement === 'recession' ? 'recession values' : 'depths'
       } from ${min} to ${max} mm.`,
     );
@@ -152,7 +149,7 @@ export function guardReplacement(
   if (outOfRange(values, measurement)) {
     return reject(
       'out_of_range',
-      `A replacement sequence must contain exactly ${SITES_PER_STATION} ${
+      `A replacement sequence must contain exactly ${context.expectedValues} ${
         measurement === 'recession' ? 'recession values' : 'depths'
       } from ${min} to ${max} mm.`,
     );
@@ -188,16 +185,6 @@ export function guardCorrection(
 
 export function guardFindings(assertions: readonly FindingAssertion[]): GuardVerdict {
   for (const assertion of assertions) {
-    if (
-      (assertion.finding === 'furcation' || assertion.finding === 'mobility')
-      && assertion.polarity === 'positive'
-      && assertion.grade === null
-    ) {
-      return reject(
-        'missing_grade',
-        `${assertion.finding} requires an explicit grade; nothing was charted.`,
-      );
-    }
     if (assertion.grade === null) continue;
     const max = assertion.finding === 'furcation' ? MAX_FURCATION_GRADE : MAX_MOBILITY_GRADE;
     if (assertion.finding !== 'furcation' && assertion.finding !== 'mobility') continue;

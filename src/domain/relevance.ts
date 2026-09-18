@@ -15,7 +15,7 @@
 
 import { categoryOf } from './lexicon';
 import { isFillerToken, isPotentialNumber, type LatticeNode } from './lattice';
-import { SITES_PER_STATION, type ClinicalContext, type UtteranceSource } from './types';
+import type { ClinicalContext, UtteranceSource } from './types';
 
 export type RelevanceLabel = 'chartable' | 'non_chartable' | 'uncertain';
 
@@ -197,7 +197,7 @@ export function classifyRelevance(
 
   const anchors = anchorTerms(nodes);
   const numbers = content.filter((node) => isPotentialNumber(node.token));
-  const remaining = Math.max(0, SITES_PER_STATION - context.position);
+  const remaining = Math.max(0, context.expectedValues - context.position);
 
   if (isMeasurementPhrase(nodes)) {
     reasons.push({

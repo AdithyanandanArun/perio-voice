@@ -28,7 +28,7 @@ vi.mock('../src/speech/useLocalAsr', () => ({
       listening: true,
       interimTranscript: '',
       error: null,
-      model: { name: 'large-v3', device: 'cuda', computeType: 'int8_float16' },
+      model: { name: 'large-v3', device: 'cuda', computeType: 'float16' },
       runtime: null,
       audioLevel: 0.1,
       latestDecodeMs: 15,

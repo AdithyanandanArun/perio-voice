@@ -1,4 +1,4 @@
-import { CAPTURE_BATCH_MS, CAPTURE_CONSTRAINTS, TARGET_SAMPLE_RATE } from './protocol';
+import { CAPTURE_CONSTRAINTS, TARGET_SAMPLE_RATE } from './protocol';
 
 const MAX_CAPTURE_SECONDS = 30;
 
@@ -94,7 +94,7 @@ export async function captureSeconds(
 
     source = context.createMediaStreamSource(stream);
     worklet = new AudioWorkletNode(context, 'pcm-capture-processor', {
-      processorOptions: { targetSampleRate: TARGET_SAMPLE_RATE, batchMs: CAPTURE_BATCH_MS },
+      processorOptions: { targetSampleRate: TARGET_SAMPLE_RATE, batchMs: 100 },
     });
     mute = context.createGain();
     mute.gain.value = 0;

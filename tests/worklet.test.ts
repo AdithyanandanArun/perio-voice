@@ -9,9 +9,6 @@ interface WorkletOptions {
 interface WorkletMessage {
   pcm: ArrayBuffer;
   level: number;
-  sampleRate?: number;
-  startSample?: number;
-  endSample?: number;
 }
 
 interface CapturedWorklet {
@@ -51,7 +48,7 @@ function countingConstructor<T extends CountedTypedArrayConstructor>(
   });
 }
 
-function createWorklet(batchMs = 40) {
+function createWorklet() {
   const source = readFileSync('public/audio/pcm-capture-worklet.js', 'utf8');
   const messages: { value: WorkletMessage; transfer: ArrayBuffer[] }[] = [];
   const allocations: TypedArrayAllocations = { float32: 0, float64: 0, int16: 0 };
@@ -80,7 +77,7 @@ function createWorklet(batchMs = 40) {
 
   expect(Processor).toBeDefined();
   const worklet = new (Processor as WorkletConstructor)({
-    processorOptions: { targetSampleRate: TARGET_SAMPLE_RATE, batchMs },
+    processorOptions: { targetSampleRate: TARGET_SAMPLE_RATE, batchMs: 100 },
   });
 
   return { allocations, messages, worklet };
@@ -127,35 +124,24 @@ function captureTone(frequency: number) {
 }
 
 describe('PCM capture worklet', () => {
-  it('downsamples 48 kHz audio to one 40 ms PCM16 batch and transfers ownership', () => {
+  it('downsamples 48 kHz audio to one 100 ms PCM16 batch and transfers ownership', () => {
     const { messages, worklet } = createWorklet();
-    const input = new Float32Array(1_921).fill(0.5);
+    const input = new Float32Array(4_801).fill(0.5);
 
     expect(worklet.process([[input]])).toBe(true);
 
     expect(messages).toHaveLength(1);
-    expect(messages[0].value.pcm.byteLength).toBe(1_280);
+    expect(messages[0].value.pcm.byteLength).toBe(3_200);
     const pcm = new Int16Array(messages[0].value.pcm);
-    expect(pcm).toHaveLength(640);
+    expect(pcm).toHaveLength(1_600);
     expect(messages[0].value.level).toBeCloseTo(pcmRms(pcm), 4);
     expect(messages[0].value.level).toBeGreaterThan(0.49);
     expect(messages[0].transfer).toEqual([messages[0].value.pcm]);
-    expect(messages[0].value.sampleRate).toBe(TARGET_SAMPLE_RATE);
-    expect(messages[0].value.startSample).toBe(0);
-    expect(messages[0].value.endSample).toBe(640);
     expect(pcm.at(-1)).toBeCloseTo(16_384, -1);
   });
 
-  it('retains an explicit legacy batch size for non-live callers', () => {
-    const { messages, worklet } = createWorklet(100);
-    expect(worklet.process([[new Float32Array(4_801).fill(0.5)]])).toBe(true);
-    expect(messages).toHaveLength(1);
-    expect(new Int16Array(messages[0].value.pcm)).toHaveLength(1_600);
-    expect(messages[0].value.endSample).toBe(1_600);
-  });
-
   it('keeps render-quantum filter storage allocation-stable', () => {
-    const { allocations, messages, worklet } = createWorklet(100);
+    const { allocations, messages, worklet } = createWorklet();
     const constructorAllocations = { ...allocations };
     const silence = new Float32Array(RENDER_QUANTUM);
 

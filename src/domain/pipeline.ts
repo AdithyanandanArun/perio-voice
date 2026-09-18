@@ -33,7 +33,6 @@ import {
   advanceStation,
   isStaleObservation,
   jumpToStation,
-  isValidTooth,
   resumeStation,
   retreatStation,
   skipTooth,
@@ -50,13 +49,9 @@ import {
   bumpCounter,
   commitChanges,
   findPending,
-  inspectTransaction,
-  observedVersionOf,
-  rememberTransaction,
   recordEvent,
   recordParserDuration,
   removePending,
-  removePendingForTransaction,
   utteranceLatency,
 } from './session';
 import { SITES_PER_STATION, type ChartChange, type PipelineOverrides, type ClinicalEventKind, type ClinicalSession, type MeasurementType, type StageName, type StageOutcome, type StageTrace, type UtteranceInput } from './types';
@@ -107,49 +102,8 @@ export function processUtterance(
 ): ClinicalSession {
   const trace = new Trace();
   const started = now();
-  const transaction = inspectTransaction(session, input);
-  const missingAsrContext = input.source === 'asr'
-    && transaction.identity !== null
-    && observedVersionOf(input) === null;
-  if (!missingAsrContext && transaction.state === 'duplicate') return session;
-  if (!missingAsrContext && transaction.state === 'conflict') {
-    const at = input.timing.observedAt;
-    const detail = `transaction ${transaction.identity?.transactionId ?? 'unknown'} revision ${transaction.identity?.revision ?? 0} conflicts with an earlier payload`;
-    const rejected = recordEvent(session, {
-      kind: 'rejected',
-      transcript: input.transcript,
-      message: 'A transaction identity was reused with different clinical content, so nothing was written.',
-      occurredAt: at,
-      latencyMs: null,
-      trace: [{ stage: 'staleness', outcome: 'reject', detail, durationMs: 0 }],
-      transaction: transaction.identity,
-      lifecycle: 'held',
-      decision: 'rejected',
-    });
-    return recordParserDuration(rejected, round(now() - started));
-  }
-
-  // A higher revision is an update to the same transaction, not a second
-  // independent confirmation. Drop only the earlier held projection before
-  // evaluating the replacement; the old session is still available to the
-  // caller if the replacement itself is rejected.
-  if (!missingAsrContext && transaction.state === 'revision' && transaction.identity !== null) {
-    session = removePendingForTransaction(session, transaction.identity.transactionId);
-  }
-  const durableBase = session;
-
-  const observedVersion = observedVersionOf(input);
-  const inputForProcessing: UtteranceInput = transaction.identity !== null
-    ? {
-        ...input,
-        observedVersion: observedVersion ?? transaction.identity.observedVersion,
-        originalContextVersion: observedVersion ?? transaction.identity.originalContextVersion,
-      }
-    : observedVersion !== input.observedVersion
-      ? { ...input, observedVersion }
-      : input;
-  const at = inputForProcessing.timing.observedAt;
-  const approved = inputForProcessing.overrides ?? {};
+  const at = input.timing.observedAt;
+  const approved = input.overrides ?? {};
 
   const finish = (
     next: ClinicalSession,
@@ -160,114 +114,24 @@ export function processUtterance(
       latencyEligible?: boolean;
       supersedes?: number | null;
       compensates?: number | null;
-      registerTransaction?: boolean;
     } = {},
   ): ClinicalSession => {
-    const projectionOnly = inputForProcessing.lifecycle === 'provisional'
-      || inputForProcessing.lifecycle === 'held';
-    const decision = projectionOnly
-      ? 'held'
-      : kind === 'confirmation'
-        ? 'held'
-        : kind === 'rejected'
-          ? 'rejected'
-          : kind === 'ignored'
-            ? 'ignored'
-            : 'committed';
-    const lifecycle = projectionOnly
-      ? inputForProcessing.lifecycle as 'provisional' | 'held'
-      : kind === 'correction'
-        ? 'corrected'
-        : decision === 'committed'
-          ? 'confirmed'
-          : 'held';
-    const projection = projectionOnly
-      && inputForProcessing.lifecycle === 'provisional'
-      && transaction.identity !== null
-      && kind !== 'rejected'
-      && kind !== 'ignored'
-      && kind !== 'confirmation'
-      ? {
-          transaction: transaction.identity,
-          changes: [...(options.changes ?? [])],
-          context: { ...next.context },
-          workflow: {
-            ...next.workflow,
-            skipped: [...next.workflow.skipped],
-            resumeStack: [...next.workflow.resumeStack],
-          },
-        }
-      : null;
-    const projectionAction = transaction.identity === null
-      ? 'none'
-      : projection !== null
-        ? 'replace'
-        : lifecycle === 'confirmed' || lifecycle === 'corrected'
-          ? 'confirm'
-          : 'clear';
-    // The parser is allowed to calculate a projected chart for a provisional
-    // result, but no cursor, chart, tooth record or journal entry may become
-    // durable until a terminal revision arrives. Pending confirmations remain
-    // visible because they are the operator-facing projection for a hold.
-    const target = projectionOnly
-      ? {
-          ...next,
-          context: durableBase.context,
-          workflow: durableBase.workflow,
-          charts: durableBase.charts,
-          teeth: durableBase.teeth,
-          journal: durableBase.journal,
-          nextJournalId: durableBase.nextJournalId,
-        }
-      : next;
-    const committed = recordEvent(target, {
+    const committed = recordEvent(next, {
       kind,
-      transcript: inputForProcessing.transcript,
+      transcript: input.transcript,
       message,
       occurredAt: at,
-      latencyMs: options.latencyEligible === true ? utteranceLatency(inputForProcessing) : null,
+      latencyMs: options.latencyEligible === true ? utteranceLatency(input) : null,
       trace: trace.snapshot(),
       changes: options.changes,
       supersedes: options.supersedes ?? null,
       compensates: options.compensates ?? undefined,
-      transaction: transaction.identity,
-      lifecycle,
-      decision,
-      projection,
-      projectionAction,
     });
-    const withTransaction = options.registerTransaction === false
-      ? committed
-      : rememberTransaction(
-          committed,
-          input,
-          decision,
-          lifecycle,
-          committed.history[0]?.id ?? null,
-          committed.history[0]?.journalEntryId ?? null,
-          at,
-          transaction.identity,
-        );
-    return recordParserDuration(withTransaction, round(now() - started));
+    return recordParserDuration(committed, round(now() - started));
   };
 
-  // Recognition transactions must carry the exact cursor version observed by
-  // ASR. Reject before speaker/relevance/grammar can create a pending hold or
-  // accidentally bind the result to the current cursor. Simulator and
-  // evaluation inputs intentionally retain their legacy nullable version.
-  if (missingAsrContext) {
-    trace.add('speaker', 'pass', 'ASR context version missing; no clinical stages run');
-    trace.add('staleness', 'reject', 'transaction-bearing ASR input requires an observed context version');
-    return finish(
-      bumpCounter(session, 'staleContext'),
-      'rejected',
-      'This ASR transaction did not include the clinical context version observed at recognition, so nothing was written.',
-      { registerTransaction: false },
-    );
-  }
-
   /* -------- 1. speaker attribution -------- */
-  const speaker = inputForProcessing.speaker;
+  const speaker = input.speaker;
   if (speaker !== null && session.settings.requireSpeaker && !speaker.overridden && approved.speaker !== true) {
     if (speaker.decision === 'other') {
       trace.add('speaker', 'block', `attributed to another speaker (${speaker.similarity.toFixed(2)})`);
@@ -277,10 +141,10 @@ export function processUtterance(
       trace.add('speaker', 'confirm', `speaker not recognized (${speaker.similarity.toFixed(2)})`);
       const held = addPending(bumpCounter(session, 'blockedSpeaker'), {
         reason: 'unknown_speaker',
-        transcript: inputForProcessing.transcript,
+        transcript: input.transcript,
         message: 'Speaker was not recognized. Confirm that the clinician said this.',
         createdAt: at,
-        input: inputForProcessing,
+        input,
       });
       return finish(held, 'confirmation', 'Held for speaker confirmation: unrecognized voice.');
     }
@@ -288,8 +152,8 @@ export function processUtterance(
   trace.add('speaker', 'pass', speaker === null ? 'no attribution required' : `attributed to the clinician`);
 
   /* -------- 2. staleness -------- */
-  if (isStaleObservation(inputForProcessing.observedVersion, session.context.version)) {
-    trace.add('staleness', 'reject', `observed version ${inputForProcessing.observedVersion}, current ${session.context.version}`);
+  if (isStaleObservation(input.observedVersion, session.context.version)) {
+    trace.add('staleness', 'reject', `observed version ${input.observedVersion}, current ${session.context.version}`);
     return finish(
       bumpCounter(session, 'staleContext'),
       'rejected',
@@ -299,7 +163,7 @@ export function processUtterance(
   trace.add('staleness', 'pass', `context version ${session.context.version}`);
 
   /* -------- 3. lexicon (safe vocabulary only) -------- */
-  const safe = canonicalize(inputForProcessing.transcript);
+  const safe = canonicalize(input.transcript);
   if (safe.tokens.length === 0) {
     trace.add('lexicon', 'reject', 'empty transcript');
     return finish(session, 'ignored', 'Empty transcript ignored.');
@@ -313,15 +177,15 @@ export function processUtterance(
   );
 
   /* -------- 4. lattice -------- */
-  let nodes = buildLattice(safe.tokens, { words: inputForProcessing.words });
+  let nodes = buildLattice(safe.tokens, { words: input.words });
   const acoustic = acousticConfidence(nodes);
   trace.add('lattice', 'pass', `${nodes.length} node(s), ${countCandidates(nodes)} candidate(s)`);
 
   /* -------- 5. relevance -------- */
   const relevance = classifyRelevance(nodes, session.context, {
     acoustic,
-    audioMs: inputForProcessing.audioMs,
-    source: inputForProcessing.source,
+    audioMs: input.audioMs,
+    source: input.source,
   });
   let scored = countRelevance(session, relevance);
   const enforcing = session.settings.relevanceMode === 'enforce';
@@ -336,19 +200,19 @@ export function processUtterance(
   if (relevance.label === 'uncertain' && enforcing && approved.relevance !== true) {
     scored = addPending(scored, {
       reason: 'uncertain_relevance',
-      transcript: inputForProcessing.transcript,
+      transcript: input.transcript,
       message: `Unclear whether this was clinical: ${explainRelevance(relevance)}`,
       createdAt: at,
-      input: inputForProcessing,
+      input,
     });
     return finish(scored, 'confirmation', 'Held for confirmation: unclear whether this was clinical speech.');
   }
 
   /* -------- 6. lexicon (contextual variants, now that it is clinical) -------- */
-  const contextual = canonicalize(inputForProcessing.transcript, { contextual: true });
+  const contextual = canonicalize(input.transcript, { contextual: true });
   const risky = contextual.replacements.filter((item) => item.risk === 'contextual');
   if (risky.length > 0) {
-    nodes = buildLattice(contextual.tokens, { words: inputForProcessing.words });
+    nodes = buildLattice(contextual.tokens, { words: input.words });
     trace.add('lexicon', 'adjust', `contextual: ${risky.map((item) => `${item.from}→${item.to}`).join(', ')}`);
   }
 
@@ -361,7 +225,7 @@ export function processUtterance(
       ? resolution.ambiguities.map((item) => item.chosen).join(', ')
       : 'no ambiguity',
   );
-  if (inputForProcessing.strictAutoChart && resolution.ambiguities.length > 0) {
+  if (input.strictAutoChart && resolution.ambiguities.length > 0) {
     trace.add('context', 'reject', 'strict automatic charting does not resolve acoustically ambiguous words');
     return finish(
       scored,
@@ -379,12 +243,12 @@ export function processUtterance(
   // clinical meaning, the context can pick among the rest — which is the whole
   // reason the alternatives are requested. A reading that already parsed is never
   // overridden, so this can only recover an utterance, never redirect one.
-  if (parse.intents.length === 0 && (inputForProcessing.alternatives?.length ?? 0) > 0) {
-    for (const alternative of inputForProcessing.alternatives ?? []) {
-      if (alternative.text.trim() === '' || alternative.text === inputForProcessing.transcript) continue;
+  if (parse.intents.length === 0 && (input.alternatives?.length ?? 0) > 0) {
+    for (const alternative of input.alternatives ?? []) {
+      if (alternative.text.trim() === '' || alternative.text === input.transcript) continue;
       const retryTokens = canonicalize(alternative.text, { contextual: true }).tokens;
       const retry = parseIntents(
-        resolveWithContext(buildLattice(retryTokens, { words: inputForProcessing.words }), session.context).tokens,
+        resolveWithContext(buildLattice(retryTokens, { words: input.words }), session.context).tokens,
         session.context,
       );
       if (retry.intents.length > 0) {
@@ -397,7 +261,7 @@ export function processUtterance(
   if (rereadFrom !== null) {
     trace.add('grammar', 'adjust', `re-read as "${rereadFrom}" from recognizer alternatives`);
   }
-  if (inputForProcessing.strictAutoChart && parse.leftover.length > 0) {
+  if (input.strictAutoChart && parse.leftover.length > 0) {
     trace.add('grammar', 'reject', `${parse.leftover.length} unparsed token(s) in strict automatic charting`);
     return finish(
       scored,
@@ -420,8 +284,7 @@ export function processUtterance(
   }
 
   /* -------- 9..12. apply intents -------- */
-  const shadowBase = scored;
-  let working = shadowBase;
+  let working = scored;
   const changes: ChartChange[] = [];
   const messages: string[] = [];
   let kind: ClinicalEventKind = 'context';
@@ -430,7 +293,7 @@ export function processUtterance(
   let latencyEligible = false;
 
   for (const intent of parse.intents) {
-    const outcome = applyIntent(working, intent, inputForProcessing, trace, parse, approved);
+    const outcome = applyIntent(working, intent, input, trace, parse, approved);
     working = outcome.session;
     if (outcome.message !== '') messages.push(outcome.message);
     changes.push(...outcome.changes);
@@ -439,28 +302,11 @@ export function processUtterance(
     if (outcome.compensates !== null) compensates = outcome.compensates;
     kind = outcome.kind;
     if (outcome.stop) {
-      // Every intent ran against a private shadow session. A later refusal
-      // rolls back context, chart, journal and workflow changes from earlier
-      // intents in the same utterance; only the new confirmation itself may
-      // survive as a pending decision.
-      let rollback = shadowBase;
-      if (outcome.kind === 'confirmation') {
-        const existingPending = new Set(shadowBase.pending.map((pending) => pending.id));
-        const additions = outcome.session.pending.filter((pending) => !existingPending.has(pending.id));
-        rollback = {
-          ...shadowBase,
-          pending: [...shadowBase.pending, ...additions],
-          nextConfirmationId: Math.max(
-            shadowBase.nextConfirmationId,
-            ...additions.map((pending) => pending.id + 1),
-          ),
-        };
-      }
-      return finish(rollback, outcome.kind, messages.join(' '), {
-        changes: [],
-        latencyEligible: false,
-        supersedes: null,
-        compensates: null,
+      return finish(working, outcome.kind, messages.join(' '), {
+        changes: outcome.kind === 'rejected' ? [] : changes,
+        latencyEligible: outcome.kind === 'rejected' ? false : latencyEligible,
+        supersedes,
+        compensates,
       });
     }
   }
@@ -590,10 +436,6 @@ function applyCommand(
     case 'skip': {
       const tooth = intent.tooth ?? session.context.tooth;
       const move = skipTooth(session.context, session.workflow, session.charts, tooth);
-      if (!isValidTooth(tooth)) {
-        trace.add('commit', 'reject', `tooth ${tooth} is outside 1–32`);
-        return halt(session, 'rejected', move.message);
-      }
       const change: ChartChange = {
         tooth,
         surface: null,
@@ -729,8 +571,7 @@ function applyValues(
   const verdict = guardIntent(intent, session.context, record);
   // Trace details stay structural rather than repeating the message, so the
   // explanation adds information instead of echoing it.
-  const openSites = measurementValues(record, intent.measurement).filter((value) => value === null).length;
-  const shape = `${intent.values.length} value(s), ${openSites} site(s) open`;
+  const shape = `${intent.values.length} value(s), ${SITES_PER_STATION - nextOpenPosition(record, intent.measurement)} site(s) open`;
   if (verdict.outcome === 'reject') {
     trace.add('sequence', 'reject', `${verdict.code} — ${shape}`);
     return halt(session, 'rejected', verdict.reason);
@@ -876,19 +717,6 @@ function applyFindings(
   const at = input.timing.observedAt;
   const verdict = guardIntent({ kind: 'findings', assertions: [...assertions] }, session.context, recordAt(session.charts, session.context.tooth, session.context.surface));
   if (verdict.outcome === 'reject') {
-    if (verdict.code === 'missing_grade') {
-      const held = addPending(session, {
-        reason: 'missing_grade',
-        approvable: false,
-        repeatRequired: true,
-        transcript: input.transcript,
-        message: `${verdict.reason} Repeat the finding with an explicit grade; this hold cannot be approved.`,
-        createdAt: at,
-        input,
-      });
-      trace.add('sequence', 'confirm', verdict.reason);
-      return halt(held, 'confirmation', `Held for clarification: ${verdict.reason} Repeat with an explicit grade.`);
-    }
     trace.add('sequence', 'reject', verdict.reason);
     return halt(session, 'rejected', verdict.reason);
   }
@@ -913,23 +741,7 @@ function applyFindings(
   for (const assertion of assertions) {
     if (assertion.finding === 'mobility' || assertion.finding === 'furcation') {
       const before = session.teeth[tooth]?.[assertion.finding] ?? null;
-      const after = assertion.polarity === 'positive' ? assertion.grade : 0;
-      // `guardFindings` rejects this path first; keep the check here as a
-      // defensive barrier so no future caller can reintroduce Grade 1 by
-      // bypassing the guard.
-      if (after === null) {
-        const held = addPending(session, {
-          reason: 'missing_grade',
-          approvable: false,
-          repeatRequired: true,
-          transcript: input.transcript,
-          message: `${assertion.finding} requires an explicit grade. Repeat the finding with an explicit grade; this hold cannot be approved.`,
-          createdAt: at,
-          input,
-        });
-        trace.add('sequence', 'confirm', `${assertion.finding} requires an explicit grade`);
-        return halt(held, 'confirmation', `Held for clarification: ${assertion.finding} requires an explicit grade. Repeat with an explicit grade.`);
-      }
+      const after = assertion.polarity === 'positive' ? assertion.grade ?? 1 : 0;
       changes.push({ tooth, surface: null, field: assertion.finding, siteIndex: null, before, after });
       messages.push(`${titleCase(assertion.finding)} set to grade ${after}.`);
       continue;
@@ -1031,33 +843,8 @@ export function resolveConfirmation(
   const pending = findPending(session, id);
   if (pending === null) return session;
   const cleared = removePending(session, id);
-  if (approve && (pending.approvable === false || pending.repeatRequired === true)) {
-    const repeated = recordEvent(cleared, {
-      kind: 'ignored',
-      transcript: pending.transcript,
-      message: 'Approval is unavailable for this clarification hold. Repeat the finding with an explicit grade.',
-      occurredAt,
-      latencyMs: null,
-      trace: [
-        { stage: 'sequence', outcome: 'block', detail: 'repeat required; approval cannot manufacture a grade', durationMs: 0 },
-      ],
-      transaction: pending.transaction ?? null,
-      lifecycle: 'held',
-      decision: 'ignored',
-    });
-    return rememberTransaction(
-      repeated,
-      pending.input,
-      'ignored',
-      'held',
-      repeated.history[0]?.id ?? null,
-      repeated.history[0]?.journalEntryId ?? null,
-      occurredAt,
-      pending.transaction ?? null,
-    );
-  }
   if (!approve) {
-    const discarded = recordEvent(cleared, {
+    return recordEvent(cleared, {
       kind: 'ignored',
       transcript: pending.transcript,
       message: `Discarded after review: ${pending.message}`,
@@ -1066,29 +853,12 @@ export function resolveConfirmation(
       trace: [
         { stage: 'commit', outcome: 'block', detail: 'operator declined', durationMs: 0 },
       ],
-      transaction: pending.transaction ?? null,
-      lifecycle: 'held',
-      decision: 'ignored',
     });
-    return rememberTransaction(
-      discarded,
-      pending.input,
-      'ignored',
-      'held',
-      discarded.history[0]?.id ?? null,
-      discarded.history[0]?.journalEntryId ?? null,
-      occurredAt,
-      pending.transaction ?? null,
-    );
   }
   return processUtterance(cleared, {
     ...pending.input,
     timing: { startedAt: pending.input.timing.startedAt, observedAt: occurredAt },
-    // Keep the version captured when the utterance was held. Approval is a
-    // replay, not permission to retarget the value at today's cursor.
-    observedVersion: pending.input.observedVersion,
-    originalContextVersion: pending.input.originalContextVersion,
-    replayOfTransaction: true,
+    observedVersion: null,
     overrides: {
       speaker: true,
       relevance: true,

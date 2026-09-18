@@ -3,26 +3,16 @@ import type { SpeakerVerdict } from '../domain/types';
 import { captureSeconds } from './capture';
 import {
   ASR_PROTOCOL_VERSION,
-  createAudioGapControl,
-  LIVE_BATCH_MS,
-  MAX_BUFFERED_AUDIO_BYTES,
   TARGET_SAMPLE_RATE,
   asrWebSocketUrl,
   parseServerMessage,
   readAlternatives,
   readCadence,
-  readLifecycle,
-  readOriginalContextVersion,
-  readRecognitionPath,
-  readSampleTiming,
   readSpeaker,
   readWords,
-  type AsrEndpoint,
   type AsrFinal,
   type AsrModelInfo,
-  type AsrPartial,
   type AsrServerMessage,
-  type AsrTiming,
   type AsrStatus,
   CAPTURE_CONSTRAINTS,
   type CadenceInfo,
@@ -31,12 +21,8 @@ import {
   type RuntimeInfo,
 } from './protocol';
 
-export interface UseLocalAsrOptions {
+interface UseLocalAsrOptions {
   onFinal: (final: AsrFinal) => void;
-  /** Receives every replaceable hypothesis without affecting final delivery. */
-  onPartial?: (partial: AsrPartial) => void;
-  /** Receives the endpoint boundary before the corresponding final, when sent. */
-  onEndpoint?: (endpoint: AsrEndpoint) => void;
   /**
    * Read at speech start, not at commit. A final that was overtaken by a change
    * of location has to be recognizable as stale by the time it arrives.
@@ -58,8 +44,6 @@ export interface LocalAsrController {
   cadence: CadenceInfo | null;
   enrollment: EnrollmentState | null;
   enrolling: boolean;
-  /** Stable for the lifetime of the current WebSocket stream. */
-  streamId: string | null;
   start: () => Promise<void>;
   stop: () => void;
   retry: () => void;
@@ -81,53 +65,6 @@ interface CaptureResources {
   mute: GainNode;
 }
 
-interface WorkletAudioMessage {
-  pcm: ArrayBuffer;
-  level: number;
-  sampleRate?: number;
-  startSample?: number;
-  endSample?: number;
-}
-
-const AUDIO_LEVEL_INTERVAL_MS = 80;
-let fallbackIdentity = 0;
-
-function now(): number {
-  return typeof performance !== 'undefined' ? performance.now() : Date.now();
-}
-
-function stableIdentity(prefix: string): string {
-  const cryptoApi = globalThis.crypto;
-  if (typeof cryptoApi?.randomUUID === 'function') return `${prefix}-${cryptoApi.randomUUID()}`;
-  fallbackIdentity += 1;
-  return `${prefix}-${Date.now().toString(36)}-${fallbackIdentity.toString(36)}`;
-}
-
-function finiteNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function messageUtteranceId(message: AsrServerMessage): number | null {
-  return finiteNumber(message.utteranceId);
-}
-
-function messageRevision(message: AsrServerMessage, fallback: number): number {
-  const revision = finiteNumber(message.revision);
-  return revision !== null ? Math.max(0, Math.floor(revision)) : fallback;
-}
-
-function messageStreamId(message: AsrServerMessage, fallback: string | null): string | null {
-  return typeof message.streamId === 'string' && message.streamId.trim() !== ''
-    ? message.streamId.trim()
-    : fallback;
-}
-
-function messageTransactionId(message: AsrServerMessage, fallback: string | null): string | null {
-  return typeof message.transactionId === 'string' && message.transactionId.trim() !== ''
-    ? message.transactionId.trim()
-    : fallback;
-}
-
 export function supportsLocalAudioCapture(): boolean {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
   const Context = window.AudioContext ?? window.webkitAudioContext;
@@ -139,12 +76,7 @@ export function supportsLocalAudioCapture(): boolean {
   );
 }
 
-export function useLocalAsr({
-  onFinal,
-  onPartial,
-  onEndpoint,
-  contextVersion,
-}: UseLocalAsrOptions): LocalAsrController {
+export function useLocalAsr({ onFinal, contextVersion }: UseLocalAsrOptions): LocalAsrController {
   const supported = useMemo(supportsLocalAudioCapture, []);
   const [status, setStatus] = useState<AsrStatus>(supported ? 'connecting' : 'unsupported');
   const [interimTranscript, setInterimTranscript] = useState('');
@@ -158,78 +90,28 @@ export function useLocalAsr({
   const [cadence, setCadence] = useState<CadenceInfo | null>(null);
   const [enrollment, setEnrollment] = useState<EnrollmentState | null>(null);
   const [enrolling, setEnrolling] = useState(false);
-  const [streamId, setStreamId] = useState<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const captureRef = useRef<CaptureResources | null>(null);
   const desiredListeningRef = useRef(false);
   const speechStartedAtRef = useRef<number | null>(null);
-  const speechStartSampleRef = useRef<number | null>(null);
   const observedVersionRef = useRef<number | null>(null);
-  const streamIdRef = useRef<string | null>(null);
-  const utteranceIdRef = useRef<number | null>(null);
-  const transactionIdRef = useRef<string | null>(null);
-  const revisionRef = useRef(0);
-  const sampleCursorRef = useRef(0);
-  const audioGapRef = useRef<{ startSample: number; endSample: number } | null>(null);
-  const streamStartedRef = useRef(false);
   const contextVersionRef = useRef(contextVersion);
   const reconnectTimerRef = useRef<number | null>(null);
   const reconnectAttemptRef = useRef(0);
   const connectRef = useRef<() => void>(() => undefined);
   const mountedRef = useRef(false);
   const onFinalRef = useRef(onFinal);
-  const onPartialRef = useRef(onPartial);
-  const onEndpointRef = useRef(onEndpoint);
   const enrollmentCaptureRef = useRef<AbortController | null>(null);
-  const levelTimerRef = useRef<number | null>(null);
-  const pendingLevelRef = useRef(0);
-  const lastLevelAtRef = useRef<number | null>(null);
 
   useEffect(() => {
     onFinalRef.current = onFinal;
-    onPartialRef.current = onPartial;
-    onEndpointRef.current = onEndpoint;
     contextVersionRef.current = contextVersion;
-  }, [contextVersion, onEndpoint, onFinal, onPartial]);
-
-  const publishAudioLevel = useCallback((level: number) => {
-    const bounded = Math.max(0, Math.min(1, Number.isFinite(level) ? level : 0));
-    pendingLevelRef.current = bounded;
-    const at = now();
-    const last = lastLevelAtRef.current;
-    if (last === null || at - last >= AUDIO_LEVEL_INTERVAL_MS) {
-      lastLevelAtRef.current = at;
-      setAudioLevel(bounded);
-      return;
-    }
-    if (levelTimerRef.current !== null) return;
-    levelTimerRef.current = window.setTimeout(() => {
-      levelTimerRef.current = null;
-      lastLevelAtRef.current = now();
-      if (mountedRef.current) setAudioLevel(pendingLevelRef.current);
-    }, Math.max(0, AUDIO_LEVEL_INTERVAL_MS - (at - last)));
-  }, []);
-
-  const resetAudioLevel = useCallback(() => {
-    if (levelTimerRef.current !== null) {
-      window.clearTimeout(levelTimerRef.current);
-      levelTimerRef.current = null;
-    }
-    pendingLevelRef.current = 0;
-    lastLevelAtRef.current = now();
-    setAudioLevel(0);
-  }, []);
+  }, [contextVersion, onFinal]);
 
   const releaseCapture = useCallback((updateState = true) => {
     const capture = captureRef.current;
     captureRef.current = null;
-    if (!capture) {
-      if (updateState) {
-        setCaptureActive(false);
-        resetAudioLevel();
-      }
-      return;
-    }
+    if (!capture) return;
     capture.worklet.port.onmessage = null;
     capture.source.disconnect();
     capture.worklet.disconnect();
@@ -238,151 +120,16 @@ export function useLocalAsr({
     void capture.context.close();
     if (updateState) {
       setCaptureActive(false);
-      resetAudioLevel();
+      setAudioLevel(0);
     }
-  }, [resetAudioLevel]);
-
-  const startControl = useCallback(() => {
-    const current = streamIdRef.current ?? stableIdentity('stream');
-    streamIdRef.current = current;
-    setStreamId(current);
-    return JSON.stringify({ type: 'start', streamId: current });
   }, []);
-
-  const sendStartControl = useCallback((socket: WebSocket) => {
-    socket.send(startControl());
-    streamStartedRef.current = true;
-  }, [startControl]);
-
-  const flushAudioGapControl = useCallback((socket: WebSocket | null) => {
-    const gap = audioGapRef.current;
-    audioGapRef.current = null;
-    if (!gap || socket?.readyState !== WebSocket.OPEN) return;
-    const streamId = streamIdRef.current ?? stableIdentity('stream');
-    streamIdRef.current = streamId;
-    socket.send(JSON.stringify(createAudioGapControl(
-      streamId,
-      gap.startSample,
-      gap.endSample,
-    )));
-  }, []);
-
-  const sendAudioFrame = useCallback((frame: WorkletAudioMessage) => {
-    const frameSamples = Math.max(0, Math.floor(frame.pcm.byteLength / Int16Array.BYTES_PER_ELEMENT));
-    const suppliedStart = finiteNumber(frame.startSample);
-    const frameStart = Math.max(0, suppliedStart ?? sampleCursorRef.current);
-    const suppliedEnd = finiteNumber(frame.endSample);
-    const frameEnd = Math.max(frameStart, suppliedEnd ?? frameStart + frameSamples);
-    sampleCursorRef.current = Math.max(sampleCursorRef.current, frameEnd);
-
-    const socket = socketRef.current;
-    if (!desiredListeningRef.current || !streamStartedRef.current
-        || socket?.readyState !== WebSocket.OPEN) return;
-
-    const buffered = socket.bufferedAmount;
-    const canSend = typeof buffered !== 'number'
-      || buffered + frame.pcm.byteLength <= MAX_BUFFERED_AUDIO_BYTES;
-    if (!canSend) {
-      // Keep the page bounded. The skipped samples are represented by one
-      // ordered audio_gap marker before the first PCM frame after recovery.
-      const gap = audioGapRef.current;
-      if (gap) {
-        gap.startSample = Math.min(gap.startSample, frameStart);
-        gap.endSample = Math.max(gap.endSample, frameEnd);
-      } else {
-        audioGapRef.current = { startSample: frameStart, endSample: frameEnd };
-      }
-      return;
-    }
-
-    if (audioGapRef.current) flushAudioGapControl(socket);
-    socket.send(frame.pcm);
-  }, [flushAudioGapControl]);
 
   const handleServerMessage = useCallback((message: AsrServerMessage) => {
     if (message.model && message.device && message.computeType) {
       setModel({ name: message.model, device: message.device, computeType: message.computeType });
     }
-
-    const ensureIdentity = (incoming: AsrServerMessage, observedAt: number) => {
-      const incomingStreamId = messageStreamId(incoming, streamIdRef.current);
-      if (incomingStreamId !== null) {
-        streamIdRef.current = incomingStreamId;
-        setStreamId(incomingStreamId);
-      }
-      const incomingUtteranceId = messageUtteranceId(incoming);
-      if (incomingUtteranceId !== null) utteranceIdRef.current = incomingUtteranceId;
-      if (speechStartedAtRef.current === null) {
-        speechStartedAtRef.current = observedAt;
-        observedVersionRef.current = readOriginalContextVersion(incoming)
-          ?? contextVersionRef.current?.()
-          ?? null;
-      }
-      const sampleTiming = readSampleTiming(incoming);
-      if (sampleTiming.startSample !== null && speechStartSampleRef.current === null) {
-        speechStartSampleRef.current = sampleTiming.startSample;
-      }
-      const fallbackTransaction = transactionIdRef.current
-        ?? (streamIdRef.current !== null && utteranceIdRef.current !== null
-          ? `${streamIdRef.current}:${utteranceIdRef.current}`
-          : stableIdentity('transaction'));
-      transactionIdRef.current = messageTransactionId(incoming, fallbackTransaction);
-      revisionRef.current = messageRevision(incoming, revisionRef.current + 1);
-      const incomingContextVersion = readOriginalContextVersion(incoming);
-      if (incomingContextVersion !== null) observedVersionRef.current = incomingContextVersion;
-      return {
-        streamId: streamIdRef.current,
-        utteranceId: utteranceIdRef.current,
-        transactionId: transactionIdRef.current,
-        revision: revisionRef.current,
-        originalContextVersion: observedVersionRef.current,
-      };
-    };
-
-    const timingFor = (incoming: AsrServerMessage, observedAt: number): AsrTiming => {
-      const sampleTiming = readSampleTiming(incoming);
-      const startSample = sampleTiming.startSample ?? speechStartSampleRef.current;
-      const durationSamples = sampleTiming.durationSamples
-        ?? (startSample !== null && sampleTiming.endSample !== null
-          ? sampleTiming.endSample - startSample
-          : null);
-      const endSample = sampleTiming.endSample
-        ?? (startSample !== null && durationSamples !== null ? startSample + durationSamples : null);
-      return {
-        startedAt: speechStartedAtRef.current ?? observedAt,
-        observedAt,
-        sampleRate: sampleTiming.sampleRate
-          ?? (startSample !== null || endSample !== null || durationSamples !== null
-            ? TARGET_SAMPLE_RATE
-            : null),
-        startSample,
-        endSample,
-        durationSamples,
-      };
-    };
-
-    const emitEndpoint = (
-      incoming: AsrServerMessage,
-      existingIdentity?: ReturnType<typeof ensureIdentity>,
-    ) => {
-      const observedAt = now();
-      const identity = existingIdentity ?? ensureIdentity(incoming, observedAt);
-      onEndpointRef.current?.({
-        ...identity,
-        timing: timingFor(incoming, observedAt),
-        lifecycle: readLifecycle(incoming, 'provisional'),
-        recognitionPath: readRecognitionPath(incoming),
-        audioMs: finiteNumber(incoming.audioMs),
-      });
-      setStatus('processing');
-    };
-
     switch (message.type) {
       case 'hello':
-        if (message.streamId) {
-          streamIdRef.current = message.streamId;
-          setStreamId(message.streamId);
-        }
         if (message.protocol !== ASR_PROTOCOL_VERSION) {
           setStatus('error');
           setError('The browser and local ASR service use incompatible protocol versions.');
@@ -401,82 +148,48 @@ export function useLocalAsr({
         setError(null);
         setStatus(desiredListeningRef.current ? 'connecting' : 'ready');
         if (desiredListeningRef.current && socketRef.current?.readyState === WebSocket.OPEN) {
-          sendStartControl(socketRef.current);
+          socketRef.current.send(JSON.stringify({ type: 'start' }));
         }
         break;
       case 'listening':
         setStatus('listening');
         break;
-      case 'speech_start': {
-        const observedAt = now();
-        const sampleTiming = readSampleTiming(message);
-        speechStartedAtRef.current = observedAt;
-        speechStartSampleRef.current = sampleTiming.startSample;
-        observedVersionRef.current = readOriginalContextVersion(message)
-          ?? contextVersionRef.current?.()
-          ?? null;
-        utteranceIdRef.current = messageUtteranceId(message);
-        transactionIdRef.current = messageTransactionId(message, null);
-        revisionRef.current = messageRevision(message, 0);
-        ensureIdentity(message, observedAt);
+      case 'speech_start':
+        speechStartedAtRef.current ??= performance.now() - 100;
+        observedVersionRef.current = contextVersionRef.current?.() ?? null;
         setStatus('processing');
         break;
-      }
-      case 'partial': {
-        const observedAt = now();
-        const identity = ensureIdentity(message, observedAt);
-        const transcript = message.text?.trim() ?? '';
-        const partial: AsrPartial = {
-          ...identity,
-          transcript,
-          timing: timingFor(message, observedAt),
-          lifecycle: readLifecycle(message, 'provisional'),
-          recognitionPath: readRecognitionPath(message),
-          audioMs: finiteNumber(message.audioMs),
-          decodeMs: finiteNumber(message.decodeMs),
-        };
-        setInterimTranscript(transcript);
-        setLatestDecodeMs(partial.decodeMs);
-        onPartialRef.current?.(partial);
+      case 'partial':
+        setInterimTranscript(message.text?.trim() ?? '');
+        setLatestDecodeMs(message.decodeMs ?? null);
         setStatus('processing');
-        break;
-      }
-      case 'endpoint':
-      case 'speech_end':
-        emitEndpoint(message);
         break;
       case 'final': {
         const transcript = message.text?.trim() ?? '';
-        const observedAt = now();
-        const identity = ensureIdentity(message, observedAt);
+        const observedAt = performance.now();
         const verdict = readSpeaker(message);
-        const timing = timingFor(message, observedAt);
         setSpeaker(verdict);
         setCadence(readCadence(message));
-        if (message.endpoint) emitEndpoint(message, identity);
         if (transcript) {
           onFinalRef.current({
             transcript,
-            timing,
+            timing: {
+              startedAt: speechStartedAtRef.current ?? observedAt,
+              observedAt,
+            },
             words: readWords(message),
             alternatives: readAlternatives(message),
-            ...identity,
-            lifecycle: readLifecycle(message, 'confirmed'),
-            recognitionPath: readRecognitionPath(message),
-            audioMs: finiteNumber(message.audioMs),
-            decodeMs: finiteNumber(message.decodeMs),
+            utteranceId: message.utteranceId ?? null,
+            audioMs: message.audioMs ?? null,
+            decodeMs: message.decodeMs ?? null,
             speaker: verdict,
-            observedVersion: identity.originalContextVersion,
+            observedVersion: observedVersionRef.current,
           });
         }
         speechStartedAtRef.current = null;
-        speechStartSampleRef.current = null;
         observedVersionRef.current = null;
-        utteranceIdRef.current = null;
-        transactionIdRef.current = null;
-        revisionRef.current = 0;
         setInterimTranscript('');
-        setLatestDecodeMs(finiteNumber(message.decodeMs));
+        setLatestDecodeMs(message.decodeMs ?? null);
         setStatus(desiredListeningRef.current ? 'listening' : 'ready');
         break;
       }
@@ -490,7 +203,7 @@ export function useLocalAsr({
       default:
         break;
     }
-  }, [sendStartControl]);
+  }, []);
 
   const connect = useCallback(() => {
     if (!supported || !mountedRef.current) return;
@@ -503,9 +216,6 @@ export function useLocalAsr({
 
     setStatus('connecting');
     setError(null);
-    const nextStreamId = stableIdentity('stream');
-    streamIdRef.current = nextStreamId;
-    setStreamId(nextStreamId);
     const socket = new WebSocket(asrWebSocketUrl(window.location));
     socket.binaryType = 'arraybuffer';
     socketRef.current = socket;
@@ -523,18 +233,7 @@ export function useLocalAsr({
       setError('Cannot reach the local speech service. Start it with npm run dev, then retry.');
     };
     socket.onclose = () => {
-      if (socketRef.current === socket) {
-        flushAudioGapControl(socket);
-        socketRef.current = null;
-        streamStartedRef.current = false;
-        sampleCursorRef.current = 0;
-        speechStartedAtRef.current = null;
-        speechStartSampleRef.current = null;
-        observedVersionRef.current = null;
-        utteranceIdRef.current = null;
-        transactionIdRef.current = null;
-        revisionRef.current = 0;
-      }
+      if (socketRef.current === socket) socketRef.current = null;
       if (!mountedRef.current) return;
       setStatus('offline');
       setError('The local speech service disconnected. Reconnecting automatically…');
@@ -542,7 +241,7 @@ export function useLocalAsr({
       reconnectAttemptRef.current += 1;
       reconnectTimerRef.current = window.setTimeout(() => connectRef.current(), delay);
     };
-  }, [flushAudioGapControl, handleServerMessage, supported]);
+  }, [handleServerMessage, supported]);
 
   useEffect(() => {
     connectRef.current = connect;
@@ -559,9 +258,6 @@ export function useLocalAsr({
       return;
     }
     desiredListeningRef.current = true;
-    streamStartedRef.current = false;
-    sampleCursorRef.current = 0;
-    audioGapRef.current = null;
     setStatus('connecting');
     setError(null);
     let pendingStream: MediaStream | null = null;
@@ -580,13 +276,16 @@ export function useLocalAsr({
       await context.audioWorklet.addModule('/audio/pcm-capture-worklet.js');
       const source = context.createMediaStreamSource(stream);
       const worklet = new AudioWorkletNode(context, 'pcm-capture-processor', {
-        processorOptions: { targetSampleRate: TARGET_SAMPLE_RATE, batchMs: LIVE_BATCH_MS },
+        processorOptions: { targetSampleRate: TARGET_SAMPLE_RATE, batchMs: 100 },
       });
       const mute = context.createGain();
       mute.gain.value = 0;
-      worklet.port.onmessage = (event: MessageEvent<WorkletAudioMessage>) => {
-        publishAudioLevel(event.data.level * 4);
-        sendAudioFrame(event.data);
+      worklet.port.onmessage = (event: MessageEvent<{ pcm: ArrayBuffer; level: number }>) => {
+        setAudioLevel(Math.min(1, event.data.level * 4));
+        const socket = socketRef.current;
+        if (desiredListeningRef.current && socket?.readyState === WebSocket.OPEN) {
+          socket.send(event.data.pcm);
+        }
       };
       source.connect(worklet);
       worklet.connect(mute);
@@ -600,15 +299,10 @@ export function useLocalAsr({
       if (!socket || socket.readyState !== WebSocket.OPEN) {
         throw new Error('the local speech service disconnected during microphone setup');
       }
-      sampleCursorRef.current = 0;
-      audioGapRef.current = null;
-      sendStartControl(socket);
+      socket.send(JSON.stringify({ type: 'start' }));
       setStatus('connecting');
     } catch (reason) {
       desiredListeningRef.current = false;
-      streamStartedRef.current = false;
-      audioGapRef.current = null;
-      sampleCursorRef.current = 0;
       if (pendingStream) {
         for (const track of pendingStream.getTracks()) track.stop();
       }
@@ -618,28 +312,20 @@ export function useLocalAsr({
       setError(`Microphone capture could not start: ${detail}`);
       setStatus('error');
     }
-  }, [connect, publishAudioLevel, releaseCapture, sendAudioFrame, sendStartControl, status, supported]);
+  }, [connect, releaseCapture, status, supported]);
 
   const stop = useCallback(() => {
     desiredListeningRef.current = false;
-    const socket = socketRef.current;
-    flushAudioGapControl(socket);
-    streamStartedRef.current = false;
-    sampleCursorRef.current = 0;
     speechStartedAtRef.current = null;
-    speechStartSampleRef.current = null;
-    observedVersionRef.current = null;
-    utteranceIdRef.current = null;
-    transactionIdRef.current = null;
-    revisionRef.current = 0;
     setInterimTranscript('');
+    const socket = socketRef.current;
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'stop' }));
     releaseCapture();
     setStatus((current) => {
       if (current === 'unsupported') return current;
       return socket?.readyState === WebSocket.OPEN ? 'ready' : 'offline';
     });
-  }, [flushAudioGapControl, releaseCapture]);
+  }, [releaseCapture]);
 
   const declaredExpectationRef = useRef<ClinicalExpectation | null>(null);
 
@@ -703,7 +389,9 @@ export function useLocalAsr({
     try {
       const sample = await captureSeconds(seconds, {
         signal: controller.signal,
-        onLevel: (level) => publishAudioLevel(level * 4),
+        onLevel: (level) => {
+          if (mountedRef.current) setAudioLevel(Math.min(1, level * 4));
+        },
       });
       const response = await fetch('/api/speaker/enroll', { method: 'POST', body: sample });
       const state = (await response.json()) as EnrollmentState & { error?: string };
@@ -721,7 +409,7 @@ export function useLocalAsr({
         if (mountedRef.current) setEnrolling(false);
       }
     }
-  }, [publishAudioLevel, supported]);
+  }, [supported]);
 
   const revokeEnrollment = useCallback(async () => {
     try {
@@ -748,9 +436,6 @@ export function useLocalAsr({
     return () => {
       mountedRef.current = false;
       desiredListeningRef.current = false;
-      streamStartedRef.current = false;
-      audioGapRef.current = null;
-      sampleCursorRef.current = 0;
       if (reconnectTimerRef.current !== null) window.clearTimeout(reconnectTimerRef.current);
       const socket = socketRef.current;
       socketRef.current = null;
@@ -761,8 +446,6 @@ export function useLocalAsr({
       enrollmentCaptureRef.current?.abort();
       enrollmentCaptureRef.current = null;
       releaseCapture(false);
-      if (levelTimerRef.current !== null) window.clearTimeout(levelTimerRef.current);
-      levelTimerRef.current = null;
     };
   }, [connect, releaseCapture]);
 
@@ -780,7 +463,6 @@ export function useLocalAsr({
     cadence,
     enrollment,
     enrolling,
-    streamId,
     start,
     stop,
     retry,
