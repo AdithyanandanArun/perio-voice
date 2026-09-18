@@ -67,7 +67,10 @@ class Recognizer(Protocol):
 class FasterWhisperRecognizer:
     """Lazy, serialized Faster-Whisper inference suitable for a local CPU demo."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, prompt: str | None = None) -> None:
+        """`prompt` overrides the shared dental prompt; evaluation uses it to keep
+        a historical baseline fixed when the shared prompt changes."""
+        self.prompt_override = prompt
         self.model_name = settings.model_name
         self.device = settings.device
         self.compute_type = settings.compute_type
@@ -135,7 +138,7 @@ class FasterWhisperRecognizer:
             # Biasing costs nothing at decode time and is the cheapest available
             # defence against a general model substituting everyday English for
             # clinical vocabulary.
-            initial_prompt=dental_prompt() if self.bias_prompt else None,
+            initial_prompt=(self.prompt_override or dental_prompt()) if self.bias_prompt else None,
             word_timestamps=self.word_timestamps and not partial,
             vad_filter=False,
             without_timestamps=partial or not self.word_timestamps,

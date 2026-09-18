@@ -94,6 +94,11 @@ async def texts_for(
         await session.feed(pcm[start : start + 1_600].tobytes(), clock)
     await session.stop(clock + 100)
     await session.close()
+    errors = [m for m in messages if m["type"] == "error"]
+    if errors:
+        # A failed decode also yields no text. Without this, a GPU out of memory
+        # would read as perfect rejection.
+        raise RuntimeError(f"decode failed: {errors[0].get('message')}")
     return [str(m["text"]) for m in messages if m["type"] == "final" and str(m["text"]).strip()]
 
 

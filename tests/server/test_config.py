@@ -55,7 +55,9 @@ def test_service_falls_back_to_the_cpu_defaults_without_a_gpu(
         Engine.AUTO,
     )
     assert settings.word_timestamps is True
-    assert settings.speech_presence_threshold == 0.0
+    # Model-independent speech checks apply on the CPU too; the no-speech
+    # threshold keeps the value measured for tiny.en.
+    assert settings.speech_presence_threshold == 0.35
     assert settings.no_speech_threshold == 0.6
 
 

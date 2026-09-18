@@ -197,14 +197,19 @@ def service_settings() -> Settings:
     from server.cuda_runtime import cuda_available
 
     settings = Settings.from_env()
+
+    def unset(name: str) -> bool:
+        return os.getenv(name) is None
+
+    # Saturation and Silero do not depend on the model or the prompt, and tiny.en
+    # reads the same example prompt, so the CPU service gets them too.
+    if unset("ASR_SPEECH_PRESENCE_THRESHOLD"):
+        settings = replace(settings, speech_presence_threshold=GPU_SPEECH_PRESENCE_THRESHOLD)
     requested = os.getenv("ASR_DEVICE", "auto").strip().lower()
     if requested == "auto" and not cuda_available():
         return replace(settings, device="cpu")
     if requested not in {"auto", "cuda"}:
         return settings
-
-    def unset(name: str) -> bool:
-        return os.getenv(name) is None
 
     return replace(
         settings,
