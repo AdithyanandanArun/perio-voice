@@ -86,8 +86,8 @@ describe('Perio test page', () => {
     expect(screen.getByLabelText('Pipeline decisions this session')).toBeInTheDocument();
 
     const slot = screen.getByTestId('tooth-chart-slot');
-    expect(within(slot).getByRole('button', { name: /^Tooth 1:/ })).toBeInTheDocument();
-    expect(within(slot).getByRole('button', { name: /^Tooth 32:/ })).toBeInTheDocument();
+    expect(within(slot).getByRole('button', { name: /^Tooth 1 buccal:/ })).toBeInTheDocument();
+    expect(within(slot).getByRole('button', { name: /^Tooth 32 buccal:/ })).toBeInTheDocument();
   });
 });
 

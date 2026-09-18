@@ -317,6 +317,14 @@ Scope: Milestone 1 delivered active local Faster-Whisper recognition and a deter
   EXPECT: /Tests\s+([5-9]|\d{2,}) passed/
   EVIDENCE: automatic-evidence=v1; definition-sha256=e14d184de310600ffd1eb166a916c5a0d060e966df5b1d1fae6d0885210051d5; exit=0; EXPECT=matched; output-sha256=66059d02db238fe497238659aad7822aadc36d418c08f4327127156766f40551; output-bytes=292; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
 
+- [ ] G60: the full-mouth order is every buccal surface first -- upper 1 to 16, then lower 17 to 32 -- and then every lingual surface in the same sweep, and continuous charting, "next tooth", skip and back all follow it
+  CHECK: npm run test:run -- tests/stationOrder.test.ts
+  EXPECT: /Tests\s+([5-9]|\d{2,}) passed/
+
+- [ ] G61: the 2D chart shows 64 surface cells -- a buccal panel and a lingual panel, each with upper 1-16 and lower 32-17 -- where the active surface, each surface's own pocket severity and bleeding, and skipped teeth follow the live chart
+  CHECK: npm run test:run -- tests/toothChart.test.tsx
+  EXPECT: /Tests\s+([8-9]|\d{2,}) passed/
+
 ABANDON: G33 The speaker profile does not separate voices at the durations this product uses, so no threshold can satisfy this gate. Measured against a six-second enrollment: at 0.5 s the enrolled speaker scored 0.7662 while another voice scored 0.9627, an inverted margin of -0.1965; separation only appears around four seconds, and a rolling four-second window still leaves +0.0007 on clean single-speaker audio. The original +0.0507 margin was measured on 5.5 s against 5.5 s, which is not the comparison the product makes. G31 and G32 fix the two real defects (enrollment now completes from one ordinary take, short utterances now reach a decision) and both pass. Discrimination needs a trained speaker-embedding model behind the same interface; attribution stays off by default and ARCHITECTURE.md and EVALUATION.md both state that it does not work.
 
 ABANDON: G18 This gate claims voice attribution accepts the enrolled clinician and blocks other speakers, and that claim is not true: the underlying discrimination does not exist at clinical utterance lengths, for the reasons recorded against G33. Its check re-runs the same calibration G33 abandons, so keeping it would assert the impossible twice, and narrowing its check to whatever still passes would be fitting the oracle to the outcome. The parts that do work remain gated elsewhere -- enrollment by G31, short-utterance decisions by G32, and the pipeline's hold-on-unknown behaviour by tests/server/test_speaker.py and tests/pipeline.test.ts under G8. Attribution stays off by default and the documentation states it does not work.
