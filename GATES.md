@@ -329,6 +329,10 @@ Scope: Milestone 1 delivered active local Faster-Whisper recognition and a deter
   CHECK: npm run test:run -- tests/initialStation.test.ts
   EXPECT: /Tests\s+([3-9]|\d{2,}) passed/
 
+- [ ] G63: navigation phrases ("go/move/jump/switch/take me to tooth X", with and without a surface or following values) move to the tooth and never chart the "to" as a 2, while "to" inside a measurement sequence still reads as 2
+  CHECK: npm run test:run -- tests/navigationTo.test.ts
+  EXPECT: /Tests\s+([6-9]|\d{2,}) passed/
+
 ABANDON: G33 The speaker profile does not separate voices at the durations this product uses, so no threshold can satisfy this gate. Measured against a six-second enrollment: at 0.5 s the enrolled speaker scored 0.7662 while another voice scored 0.9627, an inverted margin of -0.1965; separation only appears around four seconds, and a rolling four-second window still leaves +0.0007 on clean single-speaker audio. The original +0.0507 margin was measured on 5.5 s against 5.5 s, which is not the comparison the product makes. G31 and G32 fix the two real defects (enrollment now completes from one ordinary take, short utterances now reach a decision) and both pass. Discrimination needs a trained speaker-embedding model behind the same interface; attribution stays off by default and ARCHITECTURE.md and EVALUATION.md both state that it does not work.
 
 ABANDON: G18 This gate claims voice attribution accepts the enrolled clinician and blocks other speakers, and that claim is not true: the underlying discrimination does not exist at clinical utterance lengths, for the reasons recorded against G33. Its check re-runs the same calibration G33 abandons, so keeping it would assert the impossible twice, and narrowing its check to whatever still passes would be fitting the oracle to the outcome. The parts that do work remain gated elsewhere -- enrollment by G31, short-utterance decisions by G32, and the pipeline's hold-on-unknown behaviour by tests/server/test_speaker.py and tests/pipeline.test.ts under G8. Attribution stays off by default and the documentation states it does not work.

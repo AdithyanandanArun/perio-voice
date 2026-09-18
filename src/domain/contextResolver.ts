@@ -67,6 +67,57 @@ export interface ResolutionResult {
 const TOOTH_MARKERS = new Set(['tooth', 'quadrant-ur', 'quadrant-ul', 'quadrant-ll', 'quadrant-lr']);
 const GRADE_MARKERS = new Set(['mobility', 'furcation', 'grade']);
 
+/**
+ * Verbs that move charting position rather than name a value. "to"/"for" right
+ * next to one of these (or right before a tooth reference) are function words
+ * of a navigation phrase, never a measurement — this is checked on the raw
+ * token text, before any context window is consulted, so it holds regardless
+ * of what a station happens to be waiting for.
+ */
+const NAVIGATION_VERBS = new Set([
+  'go',
+  'move',
+  'jump',
+  'switch',
+  'skip',
+  'back',
+  'take',
+  'head',
+  'return',
+  'come',
+]);
+/** A pronoun that can sit between a navigation verb and "to" ("take me to"). */
+const NAVIGATION_PRONOUNS = new Set(['me', 'us']);
+
+/** True when the very next token is the tooth (or quadrant) reference itself. */
+function precedesToothReference(nodes: readonly LatticeNode[], index: number): boolean {
+  const next = nodes[index + 1];
+  return next !== undefined && TOOTH_MARKERS.has(next.token);
+}
+
+/** True when the token immediately follows a navigation verb, one pronoun apart at most. */
+function followsNavigationVerb(nodes: readonly LatticeNode[], index: number): boolean {
+  const prev = nodes[index - 1];
+  if (prev === undefined) return false;
+  if (NAVIGATION_VERBS.has(prev.token)) return true;
+  if (NAVIGATION_PRONOUNS.has(prev.token)) {
+    const before = nodes[index - 2];
+    return before !== undefined && NAVIGATION_VERBS.has(before.token);
+  }
+  return false;
+}
+
+/**
+ * True when this token sits in a navigation phrase's function-word slot, so a
+ * phonetic substitution (`to`→2, `for`→4) it might carry is never a value
+ * candidate — no window, however open, can override this. This is the
+ * structural half of admissibility: it runs on token adjacency alone, not on
+ * what the clinical context is waiting for.
+ */
+function inNavigationSlot(nodes: readonly LatticeNode[], index: number): boolean {
+  return precedesToothReference(nodes, index) || followsNavigationVerb(nodes, index);
+}
+
 /** Boost applied to a reading the active clinical context is waiting for. */
 const IN_CONTEXT_BOOST = 1.6;
 /** Penalty for a literal number nothing expects; it must still reach validation. */
@@ -157,8 +208,13 @@ function score(
  * opened. Dropping it outright — rather than scoring it low — is what keeps
  * context from inventing values.
  */
-function admissible(candidate: Candidate, windows: readonly ValueWindow[]): boolean {
+function admissible(
+  candidate: Candidate,
+  windows: readonly ValueWindow[],
+  navigationSlot: boolean,
+): boolean {
   if (candidate.source !== 'homophone') return true;
+  if (navigationSlot) return false;
   if (candidate.value === null) return false;
   return windows.length > 0 && windowsAllow(windows, candidate.value);
 }
@@ -190,7 +246,8 @@ export function resolveWithContext(
 
   for (const node of nodes) {
     const windows = narrowWindows(expectation, tokens[tokens.length - 1] ?? null);
-    const usable = node.candidates.filter((candidate) => admissible(candidate, windows));
+    const navigationSlot = inNavigationSlot(nodes, node.index);
+    const usable = node.candidates.filter((candidate) => admissible(candidate, windows, navigationSlot));
     const pool = usable.length > 0 ? usable : [UNRESOLVED];
     let best = pool[0];
     let bestScore = score(best, windows, node.acoustic);
