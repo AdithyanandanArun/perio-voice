@@ -157,9 +157,17 @@ describe('multi-intent utterances', () => {
 });
 
 describe('auto advance', () => {
-  it('stays put by default so a single station can be reviewed', () => {
-    const session = processUtterance(createInitialSession(), input('three four five'));
+  it('stays put when explicitly disabled, so a single station can be reviewed', () => {
+    const session = processUtterance(
+      createInitialSession({ autoAdvance: false }),
+      input('three four five'),
+    );
     expect(session.context.tooth).toBe(14);
+
+    // Continuous charting is the default now, but a completed station is still
+    // left behind only once, never eagerly on the same utterance that filled it.
+    const defaultSession = processUtterance(createInitialSession(), input('three four five'));
+    expect(defaultSession.context.tooth).toBe(14);
   });
 
   it('leaves a finished station only when the next values arrive', () => {

@@ -72,9 +72,16 @@ function sameValue(actual, expected) {
   return (actual ?? null) === (expected ?? null);
 }
 
-function checkCase(domain, testCase) {
+function checkCase(domain, testCase, relevanceMode) {
   const failures = [];
-  let session = domain.createInitialSession(testCase.settings ?? {});
+  const settings = { ...(testCase.settings ?? {}) };
+  // A scenario that pins its own relevanceMode is testing that mode
+  // specifically (e.g. a shadow-mode regression case); the CLI flag applies
+  // to every other scenario.
+  if (relevanceMode && settings.relevanceMode === undefined) {
+    settings.relevanceMode = relevanceMode;
+  }
+  let session = domain.createInitialSession(settings);
   if (testCase.start) {
     session = domain.updateContext(session, testCase.start, -1);
   }
@@ -172,8 +179,8 @@ function cohortTable(results) {
   return [...cohorts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 }
 
-function evaluateCases(domain, cases) {
-  const results = cases.map((testCase) => checkCase(domain, testCase));
+function evaluateCases(domain, cases, relevanceMode = null) {
+  const results = cases.map((testCase) => checkCase(domain, testCase, relevanceMode));
   const parserSamples = results.flatMap((result) => result.parserSamples);
   const nonChartable = results.reduce((sum, result) => sum + result.nonChartable, 0);
   const falseEntries = results.reduce((sum, result) => sum + result.falseEntries, 0);
@@ -518,8 +525,10 @@ function loadTranscriptReport(path) {
   return validateTranscriptReport(loaded, path);
 }
 
+const RELEVANCE_MODES = new Set(['enforce', 'balanced', 'shadow']);
+
 function parseArguments(argv) {
-  const options = { gate: false, verbose: false, transcripts: null, help: false };
+  const options = { gate: false, verbose: false, transcripts: null, help: false, relevanceMode: null };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === '--gate') options.gate = true;
@@ -533,6 +542,19 @@ function parseArguments(argv) {
     } else if (argument.startsWith('--transcripts=')) {
       options.transcripts = argument.slice('--transcripts='.length);
       if (!options.transcripts) throw new Error('--transcripts requires a JSON file path');
+    } else if (argument === '--relevance-mode') {
+      const mode = argv[index + 1];
+      if (!mode || !RELEVANCE_MODES.has(mode)) {
+        throw new Error('--relevance-mode requires one of: enforce, balanced, shadow');
+      }
+      options.relevanceMode = mode;
+      index += 1;
+    } else if (argument.startsWith('--relevance-mode=')) {
+      const mode = argument.slice('--relevance-mode='.length);
+      if (!RELEVANCE_MODES.has(mode)) {
+        throw new Error('--relevance-mode requires one of: enforce, balanced, shadow');
+      }
+      options.relevanceMode = mode;
     } else {
       throw new Error(`unknown argument: ${argument}`);
     }
@@ -544,8 +566,8 @@ function parseArguments(argv) {
 }
 
 function printHelp() {
-  console.log('Usage: node scripts/evaluate-clinical.mjs [--gate] [--verbose]');
-  console.log('       node scripts/evaluate-clinical.mjs --transcripts <dental-transcripts.json> [--verbose]');
+  console.log('Usage: node scripts/evaluate-clinical.mjs [--gate] [--verbose] [--relevance-mode enforce|balanced|shadow]');
+  console.log('       node scripts/evaluate-clinical.mjs --transcripts <dental-transcripts.json> [--verbose] [--relevance-mode enforce|balanced|shadow]');
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -559,7 +581,7 @@ async function main(argv = process.argv.slice(2)) {
     const validated = loadTranscriptReport(options.transcripts);
     const domain = await loadDomain();
     const cases = transcriptCases(validated);
-    const evaluation = evaluateCases(domain, cases);
+    const evaluation = evaluateCases(domain, cases, options.relevanceMode);
     const { fixture, report } = validated;
     console.log(
       `dental fixture ${fixture.fixtureVersion} · model ${report.model} · `
@@ -575,8 +597,9 @@ async function main(argv = process.argv.slice(2)) {
 
   const domain = await loadDomain();
   const corpus = JSON.parse(readFileSync(CORPUS, 'utf8'));
-  const evaluation = evaluateCases(domain, corpus.cases);
-  console.log(`corpus ${corpus.version} · lexicon ${domain.LEXICON_VERSION} · ${evaluation.results.length} cases\n`);
+  const evaluation = evaluateCases(domain, corpus.cases, options.relevanceMode);
+  const modeNote = options.relevanceMode ? ` · relevance mode ${options.relevanceMode}` : '';
+  console.log(`corpus ${corpus.version} · lexicon ${domain.LEXICON_VERSION} · ${evaluation.results.length} cases${modeNote}\n`);
   printCohorts(evaluation.results);
   printFailures(evaluation.results, options.verbose);
   printMetrics(evaluation);

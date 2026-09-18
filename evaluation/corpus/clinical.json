@@ -2127,7 +2127,8 @@
     {
       "id": "seq-station-complete",
       "cohort": "sequence",
-      "note": "a finished station refuses a further value",
+      "note": "a finished station refuses a further value (autoAdvance off: this tests the sequence guard's overflow rejection, not continuous charting, which would instead move to the next station)",
+      "settings": { "autoAdvance": false },
       "utterances": [
         {
           "text": "three four five"

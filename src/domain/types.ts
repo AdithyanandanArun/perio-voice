@@ -299,10 +299,17 @@ export interface SessionSettings {
    */
   autoAdvance: boolean;
   /**
-   * `shadow` records relevance decisions without letting them block a commit,
-   * which is how a classifier change is evaluated before it can affect a chart.
+   * `enforce` blocks `non_chartable` speech and holds `uncertain` speech for
+   * confirmation. `shadow` records relevance decisions without letting them
+   * block a commit at all, which is how a classifier change is evaluated
+   * before it can affect a chart. `balanced` is the middle ground clinicians
+   * actually want: `non_chartable` still blocks — conversation, patient- and
+   * assistant-directed speech never charts — but `uncertain` no longer holds
+   * for confirmation; it proceeds through the remaining stages (grammar,
+   * negation, correction, sequence guard, staleness), any of which can still
+   * hold or reject it on its own grounds.
    */
-  relevanceMode: 'enforce' | 'shadow';
+  relevanceMode: 'enforce' | 'shadow' | 'balanced';
   /** Require a verified clinician voice before any utterance can commit. */
   requireSpeaker: boolean;
 }

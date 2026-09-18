@@ -17,8 +17,8 @@ import type {
 } from './types';
 
 export const DEFAULT_SETTINGS: SessionSettings = {
-  autoAdvance: false,
-  relevanceMode: 'enforce',
+  autoAdvance: true,
+  relevanceMode: 'balanced',
   requireSpeaker: false,
 };
 

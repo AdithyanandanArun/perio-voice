@@ -127,7 +127,10 @@ describe('sequence integrity through the engine', () => {
   it('never partially applies a group, for any sequence of spoken groups', () => {
     for (let seed = 1; seed <= 40; seed += 1) {
       const random = seeded(seed);
-      let session = createInitialSession();
+      // Pinned off: this test is about atomic-group integrity within one
+      // station, not continuous charting, and expects rejections once the
+      // 3-site station is full rather than a lazy advance into the next tooth.
+      let session = createInitialSession({ autoAdvance: false });
       const expected: number[] = [];
       let rejections = 0;
 

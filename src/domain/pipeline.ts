@@ -188,16 +188,26 @@ export function processUtterance(
     source: input.source,
   });
   let scored = countRelevance(session, relevance);
-  const enforcing = session.settings.relevanceMode === 'enforce';
+  // `enforce` and `balanced` both keep clearly non-clinical speech out; only
+  // `shadow` lets it through, because shadow exists to observe a classifier
+  // change without letting it touch the chart at all. `balanced` differs from
+  // `enforce` only in what it does with `uncertain`: it stops holding those
+  // for confirmation and instead lets the rest of the pipeline — grammar,
+  // negation, correction, sequence guard, staleness — decide on its own
+  // grounds, which is what makes it tolerate ordinary, imperfectly-scored
+  // clinical speech without becoming permissive of chatter.
+  const mode = session.settings.relevanceMode;
+  const blocksNonChartable = mode !== 'shadow';
+  const holdsUncertain = mode === 'enforce';
   trace.add(
     'relevance',
     relevance.label === 'chartable' ? 'pass' : relevance.label === 'uncertain' ? 'confirm' : 'block',
     `${relevance.label} (${relevance.score}): ${explainRelevance(relevance)}`,
   );
-  if (relevance.label === 'non_chartable' && enforcing) {
+  if (relevance.label === 'non_chartable' && blocksNonChartable) {
     return finish(scored, 'ignored', 'Speech contained non-charting language, so no clinical values were changed.');
   }
-  if (relevance.label === 'uncertain' && enforcing && approved.relevance !== true) {
+  if (relevance.label === 'uncertain' && holdsUncertain && approved.relevance !== true) {
     scored = addPending(scored, {
       reason: 'uncertain_relevance',
       transcript: input.transcript,
@@ -470,7 +480,40 @@ function applyCommand(
     case 'confirm':
       trace.add('commit', 'pass', 'confirmation acknowledged');
       return passthrough(session, 'confirmation', 'Say the value again or use the confirmation controls.');
+    case 'pause':
+    case 'start':
+      return applyContinuousToggle(session, intent.command, trace);
   }
+}
+
+/**
+ * Toggles continuous charting by voice. This is a settings change, not a
+ * chart write: it produces no `ChartChange`, so — consistent with `next`,
+ * `back`, `resume` and `confirm`, none of which touch the journal either —
+ * it is not undoable. It is still recorded in `history` with a full stage
+ * trace, so the toggle is auditable and visible like any other command. It
+ * never touches `session.context`, so it cannot bump `context.version`.
+ */
+function applyContinuousToggle(
+  session: ClinicalSession,
+  command: 'pause' | 'start',
+  trace: Trace,
+): Outcome {
+  const autoAdvance = command === 'start';
+  if (session.settings.autoAdvance === autoAdvance) {
+    trace.add('commit', 'pass', `continuous charting already ${autoAdvance ? 'on' : 'off'}`);
+    return passthrough(
+      session,
+      'context',
+      `Continuous charting is already ${autoAdvance ? 'on' : 'off'}.`,
+    );
+  }
+  trace.add('commit', 'pass', `continuous charting ${autoAdvance ? 'on' : 'off'}`);
+  return passthrough(
+    { ...session, settings: { ...session.settings, autoAdvance } },
+    'context',
+    `Continuous charting turned ${autoAdvance ? 'on' : 'off'}.`,
+  );
 }
 
 function applyClear(session: ClinicalSession, at: number, trace: Trace): Outcome {

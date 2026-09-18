@@ -380,6 +380,16 @@ export const LEXICON: readonly LexiconEntry[] = [
     category: 'command',
     safe: ['clear that', 'clear this tooth', 'clear the tooth', 'reset this tooth'],
   },
+  {
+    canonical: 'pause',
+    category: 'command',
+    safe: ['pause', 'pause charting', 'pause continuous charting'],
+  },
+  {
+    canonical: 'start',
+    category: 'command',
+    safe: ['start', 'start charting', 'start continuous charting', 'continue charting'],
+  },
 ];
 
 export interface LexiconReplacement {

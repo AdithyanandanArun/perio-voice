@@ -65,10 +65,14 @@ node ~/.claude/skills/unlazy/scripts/gate-check.mjs --reverify --timeout 600 GAT
 4. **Literal out-of-range numbers stay intact.** "three thirteen five" must reach
    validation and be rejected as a unit, not be quietly repaired into something
    plausible.
-5. **Uncertain means ask, not guess.** A false chart entry costs far more than an
-   utterance the clinician repeats. The `uncertain` relevance band, the
-   low-confidence polarity hold and the cross-station correction hold are all
-   deliberate. Approving one replays the original utterance through the whole
+5. **Uncertain means ask, not guess — with one owner decision.** A false chart
+   entry costs far more than an utterance the clinician repeats. The
+   low-confidence polarity hold, the cross-station correction hold and the
+   missing-grade hold are deliberate. **Owner decision (2026-09-18):** the core
+   relevance mode is `balanced` — confidently non-chartable speech is blocked,
+   but the `uncertain` band is no longer held for confirmation (the strict filter
+   held too much real speech). `enforce`/`shadow` remain for evaluation
+   (`evaluate-clinical.mjs --relevance-mode`). Approving one replays the original utterance through the whole
    pipeline with an override attached, so approved values are audited like spoken
    ones.
 6. **Only a location change bumps `context.version`.** Advancing through the three
@@ -98,6 +102,12 @@ These each cost real debugging. They are not obvious from the code.
 - **Use `no_speech_prob`, not `avg_logprob`,** to detect non-speech. Measured:
   real speech 0.018–0.504, silence/hiss/suction/handpiece 0.681–0.964. Room hiss
   scored *better* than real speech on `avg_logprob` (−0.180 vs −0.873).
+- **Continuous charting is always on, switched by voice.** Owner decision: no
+  toggle; "pause" turns it off and "start" back on (`src/domain/lexicon.ts`,
+  `tests/voiceContinuous.test.ts`). Accepted cost, measured on replay: ambiguous
+  speech after a finished tooth ("two four eight" with no expectation) now
+  charts on the next tooth — 95/104 and 3/28 false entries against 97/104 and
+  1/28 before, which puts G43/G44 one false entry over their bar.
 - **Auto-advance is lazy on purpose.** A finished station is left behind only when
   the next *measurement* arrives. Making it eager sends a finding or a correction
   spoken right after the last depth to the next tooth. The clinical corpus caught

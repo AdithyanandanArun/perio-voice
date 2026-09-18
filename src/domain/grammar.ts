@@ -11,6 +11,7 @@
  * emitted in the order they must be applied.
  */
 
+import { categoryOf } from './lexicon';
 import { resolveAssertions, type FindingAssertion } from './negation';
 import { QUADRANT_RANGES, type Quadrant } from './workflow';
 import type { ResolvedToken } from './contextResolver';
@@ -24,7 +25,9 @@ export type WorkflowCommand =
   | 'undo'
   | 'redo'
   | 'clear'
-  | 'confirm';
+  | 'confirm'
+  | 'pause'
+  | 'start';
 
 export interface CorrectionTarget {
   scope: 'last' | 'site';
@@ -67,7 +70,34 @@ const COMMAND_TERMS: Readonly<Record<string, WorkflowCommand>> = {
   redo: 'redo',
   clear: 'clear',
   confirm: 'confirm',
+  pause: 'pause',
+  start: 'start',
 };
+
+/**
+ * "pause"/"start" toggle continuous charting and take no argument. Unlike the
+ * other workflow commands, both words are ordinary English, so they are only
+ * accepted as a command when the utterance carries no other clinical content
+ * (a tooth, a quadrant, a surface, a site, a finding or a measurement word) —
+ * "let's start with tooth three" sets context on tooth 3 and does not toggle
+ * anything. A bare number alongside the word ("pause, three four five") does
+ * not disqualify it: the command still applies and, consistent with every
+ * other workflow command here, the values are discarded rather than charted,
+ * so the utterance never half-applies.
+ */
+const CONTINUOUS_COMMANDS: ReadonlySet<WorkflowCommand> = new Set(['pause', 'start']);
+
+function hasClinicalContext(resolved: readonly ResolvedToken[]): boolean {
+  return resolved.some((token) => {
+    if (token.kind !== 'term' || token.term === null) return false;
+    if (token.term === 'tooth') return true;
+    if (token.term === 'buccal' || token.term === 'lingual') return true;
+    if (token.term in QUADRANT_TERMS) return true;
+    if (token.term in SITE_TERMS) return true;
+    const category = categoryOf(token.term);
+    return category === 'finding' || category === 'measurement';
+  });
+}
 
 const CORRECTION_CUES = new Set([
   'no',
@@ -133,6 +163,7 @@ export function parseIntents(
   for (const [term, command] of Object.entries(COMMAND_TERMS)) {
     const index = findTerm(term);
     if (index === -1) continue;
+    if (CONTINUOUS_COMMANDS.has(command) && hasClinicalContext(resolved)) continue;
     consumed.add(index);
     const binding = bindTooth(resolved, findTerm('tooth'), consumed);
     return {
