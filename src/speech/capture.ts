@@ -15,6 +15,13 @@ export interface CaptureSecondsOptions {
   signal?: AbortSignal;
   /** Receives the worklet RMS level while recording and a final zero on cleanup. */
   onLevel?: (level: number) => void;
+  /** Runs after the worklet is live, so synchronized playback cannot lose its first phoneme. */
+  onReady?: () => void;
+  /**
+   * Loudspeaker replay must be audible to the microphone. Recognition keeps
+   * echo cancellation enabled; only this explicit fixture profile disables it.
+   */
+  profile?: 'recognition' | 'loudspeaker-replay';
 }
 
 function abortError(): DOMException {
@@ -70,10 +77,14 @@ export async function captureSeconds(
   const chunks: ArrayBuffer[] = [];
 
   try {
+    const constraints = options.profile === 'loudspeaker-replay'
+      ? { ...CAPTURE_CONSTRAINTS, echoCancellation: false }
+      : CAPTURE_CONSTRAINTS;
     stream = await navigator.mediaDevices.getUserMedia({
       // Same constraints as recognition, so an enrolled profile describes the
-      // voice as the recognizer will actually receive it.
-      audio: CAPTURE_CONSTRAINTS,
+      // voice as the recognizer will actually receive it. The explicit replay
+      // profile changes only echo cancellation so the laptop can hear itself.
+      audio: constraints,
     });
     if (options.signal?.aborted) throw abortError();
 
@@ -95,6 +106,8 @@ export async function captureSeconds(
     worklet.connect(mute);
     mute.connect(context.destination);
     await context.resume();
+    if (options.signal?.aborted) throw abortError();
+    options.onReady?.();
     await waitForDuration(seconds * 1_000, options.signal);
     return new Blob(chunks, { type: 'application/octet-stream' });
   } finally {

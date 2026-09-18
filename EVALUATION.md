@@ -1,6 +1,6 @@
 # Evaluation
 
-Two harnesses measure two different things, and they are kept apart on purpose.
+Three harnesses measure different boundaries, and they are kept apart on purpose.
 A word-perfect transcript can still produce a wrong chart, and a transcript full
 of errors can still produce a right one once the clinical layer has resolved it.
 Reporting them together hides which half of the system moved.
@@ -8,6 +8,7 @@ Reporting them together hides which half of the system moved.
 | Harness | Question | Command |
 | --- | --- | --- |
 | Acoustic | Did the recognizer hear the words? | `uv run python scripts/evaluate_acoustic.py` |
+| Dental recording | Did the room/device path hear each dental phrase? | `uv run python scripts/evaluate_dental.py` |
 | Clinical | Did the chart end up correct? | `node scripts/evaluate-clinical.mjs` |
 
 Both take `--gate` to apply their acceptance thresholds and print a pass marker;
@@ -87,8 +88,16 @@ a quarter of the time.
 
 | engine | word error rate | exact match | ms/utterance |
 | --- | ---: | ---: | ---: |
-| Whisper `tiny.en`, beam 5 | 0.787 | 40% | 272 |
-| grammar-constrained | 0.060 | 93% | 163 |
+| Whisper `tiny.en`, beam 5 | 0.820–0.910 | 33–40% | 280–315 |
+| grammar-constrained | 0.132 | 80% | 167–171 |
+
+The ranges are four immediate runs on the reference CPU. Whisper's temperature
+fallback varies on these very short clips; the grammar result was stable. The
+grammar score is the post-safety value: an earlier context-narrowed grammar
+reached 93%, but could force one legitimate clinical word onto another. The
+current recognizer uses the full clinical grammar and may abstain instead of
+substituting. `--verbose` prints every miss, and the gate now treats one
+additional failed clip or WER above 0.14 as a regression.
 
 ### Model size is not the variable
 
@@ -130,7 +139,7 @@ badly here:
 
 | model | grammar | word error rate | exact match | ms |
 | --- | --- | ---: | ---: | ---: |
-| `vosk-model-en-us-0.22-lgraph` (128 MB) | yes | 0.060 | 93% | 166 |
+| `vosk-model-en-us-0.22-lgraph` (128 MB) | yes | 0.132 | 80% | 167–171 |
 | `vosk-model-en-us-0.22` (2.7 GB) | no | 0.211 | 73% | 275 |
 
 The grammar is doing the work, not the acoustic model's size. Among English Vosk
@@ -141,9 +150,60 @@ ceiling for the constrained approach locally rather than a tuning choice.
 
 The audio is **synthesized, one voice, no room**. Absolute accuracy here is
 optimistic for every engine. Use it to compare engines against each other, which
-is what the gate does; do not quote 93% as a recognition rate. A recorded fixture
+is what the gate does; do not quote 80% as a real-clinic recognition rate. A recorded fixture
 from real clinicians is the measurement that settles accuracy, and
 `evaluation/fixtures/dental/` exists to hold one.
+
+## Loudspeaker TTS replay tier
+
+The opt-in fixture recorder can now fill the dental recording corpus without a
+person reading every prompt. The pinned local Piper TTS voice is played through the
+laptop speakers while the microphone is recorded through the production
+AudioWorklet and 16 kHz PCM path. The quiet pass plays speech alone; the noise
+pass adds a deterministic synthetic suction/handpiece bed. The run rejects an
+inaudible first or later clip at the browser boundary instead of creating a
+plausible-looking corpus of silence.
+
+Automated audio is stored separately from human audio:
+
+```text
+evaluation/fixtures/dental/audio/tts-replay/quiet/<utterance-id>.wav
+evaluation/fixtures/dental/audio/tts-replay/noise/<utterance-id>.wav
+```
+
+That isolation is enforced by the upload API rather than naming convention, so
+an automated pass cannot overwrite a clinician recording. Both trees remain
+git-ignored. To capture and evaluate the automated corpus:
+
+```bash
+PERIO_FIXTURE_CAPTURE=1 npm run dev
+# Open http://127.0.0.1:5173/?record=1 and start the local-TTS run.
+
+uv run python scripts/evaluate_dental.py \
+  --audio-root evaluation/fixtures/dental/audio/tts-replay \
+  --json /tmp/tts-replay-transcripts.json
+node scripts/evaluate-clinical.mjs --transcripts /tmp/tts-replay-transcripts.json
+```
+
+Echo cancellation is disabled only during loudspeaker replay; otherwise it would
+remove the signal being measured. Noise suppression and automatic gain control
+remain off, matching live capture. The normal recognition profile retains echo
+cancellation.
+
+### What this does and does not establish
+
+Unlike direct WAV decoding, loudspeaker replay exercises the physical output,
+room, microphone, browser permission, anti-alias filter and resampler before
+recognition. It is a useful repeatable integration baseline and can expose a
+muted speaker, wrong microphone, echo-cancellation mistake or capture-path
+regression.
+
+It remains one synthesized voice with synthesized noise. It does not establish
+clinical performance across human accents, pacing, low-volume speech, masks,
+different microphones, or actual operatory acoustics. A consented real-clinician
+quiet/noise corpus remains the final validation dataset; TTS replay reduces the
+manual work needed to diagnose the system but does not turn synthetic evidence
+into clinical evidence.
 
 ## Speaker attribution does not separate speakers
 
@@ -267,6 +327,7 @@ disappears.
 
 ```bash
 node scripts/verify-quality.mjs              # lint, types, tests, build, both stacks
+node scripts/verify-acoustic-replay.mjs      # Piper stimuli, browser replay, isolated upload
 node scripts/evaluate-clinical.mjs --gate    # clinical metrics
 uv run python scripts/evaluate_acoustic.py --gate   # word error rate under noise
 uv run python scripts/verify_model_runtime.py       # the real model, no mocks

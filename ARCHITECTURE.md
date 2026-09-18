@@ -42,6 +42,12 @@ Transcript simulator ───────────────────�
 GET /api/health   ← model lifecycle, runtime contract, enrolment state
 GET /api/metrics  ← bounded counters and duration histograms
 POST /api/speaker/enroll, /api/speaker/reset ← local, revocable voice profile
+
+Opt-in fixture path (development only)
+  pinned Piper TTS WAV → laptop speakers → room + microphone
+    → the same AudioWorklet / PCM16 capture path
+    → POST /api/fixture?source=tts-replay
+    → git-ignored audio/tts-replay/{quiet,noise}/ WAV corpus
 ```
 
 Component ownership:
@@ -51,6 +57,11 @@ Component ownership:
 - `src/speech/useLocalAsr.ts` — microphone permission, socket lifecycle,
   reconnects, model states, enrolment capture, and complete resource cleanup. It
   reads the clinical context version at speech start, not at commit.
+- `src/speech/acousticReplay.ts` — synchronized local Piper playback,
+  playback, deterministic operatory-noise playback, cancellation and captured
+  PCM audibility measurement. It does not run in the recognition path.
+- `src/components/FixtureRecorder.tsx` — explicit development-only manual or
+  automated fixture workflow. A capture session cannot mix the two sources.
 - `server/audio.py` — PCM validation, energy endpointing, pre-roll, partial
   cadence, maximum utterance duration.
 - `server/cadence.py` — adapts the endpoint threshold to the speaker's pacing.
@@ -150,11 +161,14 @@ could actually be saying; Whisper has an open vocabulary, which free-form
 dictation needs. Routing is by declared clinical expectation rather than by
 confidence, so the decision is inspectable and a rerun routes identically.
 
-Measured on spoken dental phrases: grammar 0.060 word error and 93% exact at
-163 ms, against Whisper `tiny.en` at 0.787 and 40% at 272 ms. Whisper size does
-not close that gap — `base.en` scores below `tiny.en` — because a thirty-second
-sequence model resolving a half-second command is a shape mismatch rather than a
-capacity limit.
+Measured after the grammar safety changes on spoken dental phrases: grammar
+0.132 word error and 80% exact at 167–171 ms, against Whisper `tiny.en` at
+0.820–0.910 and 33–40% exact at 280–315 ms across four immediate runs. Whisper
+size does not close that gap — `base.en` scores below `tiny.en` — because a
+thirty-second sequence model resolving a half-second command is a shape mismatch
+rather than a capacity limit. The grammar's earlier 93% result depended on
+context-specific narrowing that could force one valid clinical word onto
+another; the full clinical grammar is intentionally less optimistic and safer.
 
 Words a grammar lists but the lexicon lacks are dropped silently, and Vosk
 reports that only on C-level stderr. `scripts/verify_grammar_lexicon.py` gates
@@ -401,6 +415,13 @@ profile. The model repository is contacted only to download model artifacts; the
 application never sends captured audio to it. Production packaging should
 pre-provision verified model artifacts to eliminate runtime network access.
 
+Fixture capture is physically absent unless `PERIO_FIXTURE_CAPTURE=1` was set
+before server startup. Automated replay serves only checked-in WAVs rendered by
+the pinned Piper voice, keeps recordings under a separate git-ignored `tts-replay` root,
+and cannot overwrite human fixture files. The browser disables echo cancellation
+only for replay because hearing the speaker output is the measurement; normal
+recognition retains it. Empty or inaudible captures are rejected before upload.
+
 Browser WebSocket origins are allowlisted with `ASR_ALLOWED_ORIGINS`. Production
 must set the deployed trusted origin rather than accepting arbitrary websites
 that can reach a loopback service.
@@ -429,13 +450,15 @@ TLS and proxy `/api` and `/ws` to the local service.
 
 ## Evaluation strategy
 
-Three fixture tiers, described in full in [EVALUATION.md](./EVALUATION.md):
+Four fixture tiers, described in full in [EVALUATION.md](./EVALUATION.md):
 
 1. Deterministic unit tests for PCM decoding, endpointing, queue policy,
    protocol, every pipeline stage, the reducer and lifecycle cleanup.
 2. A real-model smoke fixture with a known transcript, proving the native model
    loads and decodes without mocks, plus the acoustic replay harness.
-3. A versioned clinical corpus of charting episodes across eleven cohorts with
+3. An opt-in loudspeaker TTS corpus that crosses the physical output, room,
+   microphone and production browser capture path before dental evaluation.
+4. A versioned clinical corpus of charting episodes across eleven cohorts with
    structured ground truth.
 
 Release reports separate word error rate from clinical event exact match, site
@@ -466,8 +489,9 @@ Stated plainly, because the gaps matter more than the features:
 - **Working speaker attribution.** The classical profile does not separate voices
   at clinical utterance lengths; see stage 1. A trained speaker-embedding model
   behind the same interface is the fix.
-- **A recorded dental fixture.** Recognizer comparison currently runs on
-  synthesized speech, one voice, no room.
+- **A real-clinician recorded dental fixture.** The automated loudspeaker path
+  can record synthesized speech through this room and microphone, but recognizer
+  comparison still lacks consented clinician voices and real operatory noise.
 - **Overlapping speech.** Two people talking at once is detected only as a lower
   similarity score, and resolves to `unknown`.
 - **A model-worker pool.** One operatory per process.

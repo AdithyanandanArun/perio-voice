@@ -339,6 +339,29 @@ describe('shared worklet capture', () => {
     expect(MockAudioContext.instance?.close).toHaveBeenCalledOnce();
   });
 
+  it('starts synchronized loudspeaker playback only after capture is live and disables echo cancellation', async () => {
+    vi.useFakeTimers();
+    installAudioEnvironment();
+    const onReady = vi.fn();
+    const recording = captureSeconds(1, {
+      profile: 'loudspeaker-replay',
+      onReady,
+    });
+    await waitForCaptureGraph();
+
+    expect(MockAudioContext.instance?.resume).toHaveBeenCalledOnce();
+    expect(onReady).toHaveBeenCalledOnce();
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+      audio: expect.objectContaining({
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      }),
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(recording).resolves.toBeInstanceOf(Blob);
+  });
+
   it('rejects unsafe durations before asking for microphone access', async () => {
     installAudioEnvironment();
     const getUserMedia = vi.mocked(navigator.mediaDevices.getUserMedia);

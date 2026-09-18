@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 
 from server.audio import decode_pcm16
 from server.config import Settings
@@ -30,7 +31,9 @@ FIXTURE_MANIFEST_PATH = (
     Path(__file__).resolve().parents[1] / "evaluation" / "fixtures" / "dental" / "phrases.json"
 )
 FIXTURE_AUDIO_DIR = FIXTURE_MANIFEST_PATH.parent / "audio"
+FIXTURE_TTS_DIR = FIXTURE_MANIFEST_PATH.parent / "tts"
 FIXTURE_PASSES = frozenset({"quiet", "noise"})
+FIXTURE_SOURCES = frozenset({"human", "tts-replay"})
 FIXTURE_SAMPLE_RATE = 16_000
 MAX_FIXTURE_SECONDS = 30
 MAX_FIXTURE_PCM_BYTES = FIXTURE_SAMPLE_RATE * 2 * MAX_FIXTURE_SECONDS
@@ -72,6 +75,25 @@ def create_app(
     if os.getenv("PERIO_FIXTURE_CAPTURE") == "1":
         fixture_ids = _load_fixture_ids(FIXTURE_MANIFEST_PATH)
 
+        @app.get("/api/fixture/tts")
+        async def fixture_tts_stimulus(request: Request) -> FileResponse:
+            origin = request.headers.get("origin")
+            if origin is not None and origin not in resolved_settings.allowed_origins:
+                raise HTTPException(status_code=403, detail="Capture origin is not allowed.")
+            utterance_id = request.query_params.get("id", "")
+            if not utterance_id:
+                raise HTTPException(status_code=400, detail="Fixture utterance id is required.")
+            if utterance_id not in fixture_ids:
+                raise HTTPException(status_code=404, detail="Unknown fixture utterance id.")
+            stimulus = FIXTURE_TTS_DIR / f"{utterance_id}.wav"
+            if not stimulus.is_file():
+                raise HTTPException(status_code=503, detail="Fixture TTS stimulus is unavailable.")
+            return FileResponse(
+                stimulus,
+                media_type="audio/wav",
+                headers={"Cache-Control": "no-store"},
+            )
+
         @app.post("/api/fixture")
         async def capture_dental_fixture(
             request: Request,
@@ -82,6 +104,7 @@ def create_app(
                 raise HTTPException(status_code=403, detail="Capture origin is not allowed.")
             pass_name = request.query_params.get("pass", "")
             utterance_id = request.query_params.get("id", "")
+            source = request.query_params.get("source", "human")
             if not pass_name or not utterance_id:
                 raise HTTPException(
                     status_code=400, detail="Fixture pass and utterance id are required."
@@ -90,6 +113,8 @@ def create_app(
                 raise HTTPException(status_code=404, detail="Unknown fixture pass.")
             if utterance_id not in fixture_ids:
                 raise HTTPException(status_code=404, detail="Unknown fixture utterance id.")
+            if source not in FIXTURE_SOURCES:
+                raise HTTPException(status_code=404, detail="Unknown fixture source.")
 
             content_type = request.headers.get("content-type", "").split(";", 1)[0].strip()
             if content_type and content_type != "application/octet-stream":
@@ -114,12 +139,16 @@ def create_app(
                 payload.extend(chunk)
             pcm = bytes(payload)
             _validate_fixture_pcm(pcm)
-            destination = FIXTURE_AUDIO_DIR / pass_name / f"{utterance_id}.wav"
+            source_root = (
+                FIXTURE_AUDIO_DIR / "tts-replay" if source == "tts-replay" else FIXTURE_AUDIO_DIR
+            )
+            destination = source_root / pass_name / f"{utterance_id}.wav"
             _write_fixture_wav(destination, pcm)
             response.headers["Cache-Control"] = "no-store"
             return {
                 "id": utterance_id,
                 "pass": pass_name,
+                "source": source,
                 "samples": len(pcm) // 2,
                 "durationMs": round((len(pcm) // 2) * 1_000 / FIXTURE_SAMPLE_RATE),
             }

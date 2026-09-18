@@ -295,6 +295,17 @@ select { width: 100%; padding: 8px 36px 8px 12px; }
 .fixture-progress strong { margin-bottom: 4px; font-size: 14px; }
 .fixture-progress span { color: var(--text-muted); font-family: "Fira Code", ui-monospace, monospace; font-size: 10px; }
 .fixture-progress progress { width: 100%; height: 9px; overflow: hidden; accent-color: var(--primary); border: 0; border-radius: 999px; }
+.fixture-automation { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 0.38fr); align-items: center; gap: 24px; margin-bottom: 18px; padding: 18px; background: linear-gradient(135deg, rgba(34, 211, 238, 0.11), rgba(52, 211, 153, 0.06)); border: 1px solid rgba(34, 211, 238, 0.34); border-radius: var(--radius-md); }
+.fixture-method { display: block; margin-bottom: 5px; color: var(--primary); font-family: "Fira Code", ui-monospace, monospace; font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+.fixture-automation h3 { margin: 0; font-size: 16px; }
+.fixture-automation p { max-width: 70ch; margin: 7px 0 12px; color: var(--text-muted); font-size: 12px; line-height: 1.55; }
+.fixture-automation dl { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 0; }
+.fixture-automation dl div { display: flex; gap: 6px; min-width: 0; font-family: "Fira Code", ui-monospace, monospace; font-size: 10px; }
+.fixture-automation dt { color: var(--text-muted); }
+.fixture-automation dd { overflow-wrap: anywhere; margin: 0; color: var(--text); }
+.fixture-automation-action { display: grid; gap: 8px; }
+.fixture-automation-action .button { width: 100%; min-height: 48px; text-align: center; }
+.fixture-automation-action small { color: var(--text-muted); font-size: 10px; line-height: 1.45; text-align: center; }
 .fixture-pass { display: flex; align-items: baseline; justify-content: space-between; gap: 20px; padding: 13px 15px; background: var(--primary-soft); border: 1px solid rgba(34, 211, 238, 0.24); border-radius: 10px; }
 .fixture-pass[data-pass="noise"] { background: var(--warning-soft); border-color: rgba(251, 191, 36, 0.28); }
 .fixture-pass strong { flex: none; font-size: 13px; }
@@ -342,6 +353,7 @@ tbody td { text-transform: capitalize; }
   .engine-card { grid-template-columns: auto minmax(0, 1fr); }
   .engine-retry { grid-column: 1 / -1; width: 100%; }
   .fixture-progress { grid-template-columns: 1fr; gap: 10px; }
+  .fixture-automation { grid-template-columns: 1fr; gap: 16px; }
   .fixture-pass { align-items: flex-start; flex-direction: column; gap: 6px; }
 }
 

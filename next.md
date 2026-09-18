@@ -1,5 +1,19 @@
 # Fix recognition quality
 
+> **Implementation status (2026-09-18): completed with an evidence-driven engine change.**
+> The production-path fixture recorder, private upload route, dental evaluator,
+> transcript-to-chart bridge, anti-alias filter, minimum-final/no-speech guards,
+> and room-relative VAD are implemented and gated. Dental-length measurements
+> contradicted this draft's `base.en` choice: Whisper model size did not solve
+> the short-command problem, while a context-routed grammar recognizer reached
+> 80% exact at 0.132 WER after safety hardening. The only unautomatable step is
+> real-clinician validation: the recorder can now speak all prompts through the
+> laptop speakers, add deterministic operatory noise, reject inaudible clips and
+> save an isolated TTS replay corpus automatically. Consented human audio is
+> still required before making clinical-performance claims; all captured audio
+> remains git-ignored. Current measurements and limitations live in
+> `EVALUATION.md`.
+
 ## Context
 
 The voice-to-text is bad in real use, while the repo's own harness reports word
@@ -206,8 +220,12 @@ Only now, with Phase 1 in place:
 ```bash
 # Phase 1 — record, then measure the thing that was broken
 PERIO_FIXTURE_CAPTURE=1 npm run dev
-#   open http://127.0.0.1:5173/?record=1 and read the prompts aloud
-uv run python scripts/evaluate_dental.py --json /tmp/transcripts.json
+#   open http://127.0.0.1:5173/?record=1
+#   automated: select “Record all … with Piper TTS”
+#   human validation: read the prompts aloud
+uv run python scripts/evaluate_dental.py \
+  --audio-root evaluation/fixtures/dental/audio/tts-replay \
+  --json /tmp/transcripts.json
 node scripts/evaluate-clinical.mjs --transcripts /tmp/transcripts.json
 
 # Phase 2 — nothing regresses

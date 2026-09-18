@@ -129,12 +129,17 @@ function validatePrivacy() {
   const tracked = git(['ls-files', '--', 'evaluation/fixtures/dental']);
   if (tracked.status !== 0) errors.push(`git ls-files failed: ${tracked.stderr.trim()}`);
   const trackedAudio = tracked.stdout.split(/\r?\n/).filter((path) =>
-    /\.(?:wav|pcm|flac|mp3|m4a|ogg|webm)$/i.test(path));
+    path.startsWith(`${AUDIO_PATH}/`)
+    && /\.(?:wav|pcm|flac|mp3|m4a|ogg|webm)$/i.test(path));
   if (trackedAudio.length) errors.push(`voice audio is tracked: ${trackedAudio.join(', ')}`);
 
   const ignored = git(['check-ignore', '-q', `${AUDIO_PATH}/.privacy-probe.wav`]);
   if (ignored.status !== 0) errors.push(`${AUDIO_PATH}/ is not covered by .gitignore`);
-  for (const path of [MANIFEST_PATH, 'evaluation/fixtures/dental/metrics.json']) {
+  for (const path of [
+    MANIFEST_PATH,
+    'evaluation/fixtures/dental/metrics.json',
+    'evaluation/fixtures/dental/tts/clean-depths-u01.wav',
+  ]) {
     if (git(['check-ignore', '-q', path]).status === 0) {
       errors.push(`${path} must remain committable`);
     }

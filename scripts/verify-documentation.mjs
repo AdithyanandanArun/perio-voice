@@ -42,11 +42,16 @@ require('README.md', readme, [
   'ASR_MIN_FINAL_MS',
   // The recognizer choice has to be justified where someone configuring it looks.
   'grammar-constrained',
+  '0.132',
+  '80%',
   'ASR_SPEAKER_ACCEPT',
   'ASR_MIN_END_SILENCE_MS',
   'scripts/evaluate-clinical.mjs',
   'scripts/evaluate_acoustic.py',
   'scripts/verify-quality.mjs',
+  'Automated loudspeaker fixture',
+  'evaluation/fixtures/dental/audio/tts-replay',
+  /Piper\s+en_US-lessac-medium/,
   /not a medical device/i,
 ]);
 
@@ -77,6 +82,9 @@ require('ARCHITECTURE.md', architecture, [
   'Workflow position',
   'Cadence-adaptive endpointing',
   'Noise robustness',
+  'Opt-in fixture path',
+  'src/speech/acousticReplay.ts',
+  'cannot overwrite human fixture files',
 ]);
 
 require('EVALUATION.md', evaluation, [
@@ -94,6 +102,10 @@ require('EVALUATION.md', evaluation, [
   // The speaker finding is negative; it must be stated, not merely implied.
   'does not separate speakers',
   'Model size is not the variable',
+  /one\s+additional failed clip/,
+  'Loudspeaker TTS replay tier',
+  'audio/tts-replay/noise/<utterance-id>.wav',
+  /does not establish\s+clinical performance/i,
 ]);
 
 if (failures.length > 0) {

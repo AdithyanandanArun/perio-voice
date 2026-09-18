@@ -32,6 +32,12 @@ const manifest: DentalFixtureManifest = {
   ],
 };
 
+function audiblePcm(): Blob {
+  const samples = new Int16Array(800);
+  samples.fill(1_200);
+  return new Blob([samples.buffer], { type: 'application/octet-stream' });
+}
+
 afterEach(() => {
   window.history.replaceState({}, '', '/');
   vi.unstubAllGlobals();
@@ -165,5 +171,121 @@ describe('fixture recording workflow', () => {
     await waitFor(() => expect(observedSignal).toBeDefined());
     unmount();
     expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it('replays every prompt through TTS, adds noise only on the noise pass, and isolates uploads', async () => {
+    const user = userEvent.setup();
+    const capture = vi.fn(async (
+      _seconds: number,
+      options: { onReady?: () => void; onLevel?: (value: number) => void } = {},
+    ) => {
+      options.onReady?.();
+      options.onLevel?.(0.04);
+      return audiblePcm();
+    });
+    const replay = vi.fn().mockResolvedValue(undefined);
+    const upload = vi.fn().mockResolvedValue(undefined);
+    render(
+      <FixtureRecorder
+        manifest={manifest}
+        capture={capture}
+        replay={replay}
+        replayAvailable
+        upload={upload}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Record all 4 with Piper TTS' }));
+    expect(await screen.findByText(/both tts loudspeaker passes are saved/i)).toBeInTheDocument();
+
+    expect(capture).toHaveBeenCalledTimes(4);
+    for (const call of capture.mock.calls) {
+      expect(call[1]).toEqual(expect.objectContaining({
+        profile: 'loudspeaker-replay',
+        signal: expect.any(AbortSignal),
+        onReady: expect.any(Function),
+      }));
+    }
+    expect(replay.mock.calls.map(([request]) => request.noisy)).toEqual([
+      false,
+      false,
+      true,
+      true,
+    ]);
+    expect(replay.mock.calls.map(([request]) => request.utteranceId)).toEqual([
+      'chartable-case-u01',
+      'control-case-u01',
+      'chartable-case-u01',
+      'control-case-u01',
+    ]);
+    expect(upload).toHaveBeenCalledTimes(4);
+    for (const call of upload.mock.calls) {
+      expect(call[0]).toEqual(expect.objectContaining({ source: 'tts-replay' }));
+    }
+  });
+
+  it('rejects an inaudible loudspeaker capture instead of saving a false fixture', async () => {
+    const user = userEvent.setup();
+    const capture = vi.fn(async (
+      _seconds: number,
+      options: { onReady?: () => void } = {},
+    ) => {
+      options.onReady?.();
+      return new Blob([new Int16Array(800).buffer]);
+    });
+    const upload = vi.fn().mockResolvedValue(undefined);
+    render(
+      <FixtureRecorder
+        manifest={manifest}
+        capture={capture}
+        replay={vi.fn().mockResolvedValue(undefined)}
+        replayAvailable
+        upload={upload}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Record all 4 with Piper TTS' }));
+    expect(await screen.findByText(/loudspeaker replay was inaudible/i)).toBeInTheDocument();
+    expect(upload).not.toHaveBeenCalled();
+    expect(screen.getByText('three four five')).toBeInTheDocument();
+  });
+
+  it('cancels TTS and capture together, then leaves the current phrase resumable', async () => {
+    const user = userEvent.setup();
+    let captureSignal: AbortSignal | undefined;
+    let replaySignal: AbortSignal | undefined;
+    const capture = vi.fn((
+      _seconds: number,
+      options: { signal?: AbortSignal; onReady?: () => void } = {},
+    ) => new Promise<Blob>((_resolve, reject) => {
+      captureSignal = options.signal;
+      options.onReady?.();
+      options.signal?.addEventListener('abort', () => reject(
+        new DOMException('capture cancelled', 'AbortError'),
+      ), { once: true });
+    }));
+    const replay = vi.fn((request: { signal: AbortSignal }) => new Promise<void>((_resolve, reject) => {
+      replaySignal = request.signal;
+      request.signal.addEventListener('abort', () => reject(
+        new DOMException('replay cancelled', 'AbortError'),
+      ), { once: true });
+    }));
+    render(
+      <FixtureRecorder
+        manifest={manifest}
+        capture={capture}
+        replay={replay}
+        replayAvailable
+        upload={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Record all 4 with Piper TTS' }));
+    await user.click(await screen.findByRole('button', { name: 'Cancel' }));
+
+    expect(await screen.findByText(/automated replay paused/i)).toBeInTheDocument();
+    expect(captureSignal?.aborted).toBe(true);
+    expect(replaySignal?.aborted).toBe(true);
+    expect(screen.getByRole('button', { name: /resume remaining 4 clips/i })).toBeEnabled();
   });
 });

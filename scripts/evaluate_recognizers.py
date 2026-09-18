@@ -37,7 +37,17 @@ FIXTURE = Path("evaluation/fixtures/synthetic-dental")
 """The grammar must beat the open-vocabulary engine by at least this much."""
 REQUIRED_ADVANTAGE = 0.25
 """And must clear this on its own, or it is not usable regardless of comparison."""
-REQUIRED_EXACT = 0.75
+REQUIRED_EXACT = 0.80
+"""One additional failed clip is a 3.3-point regression on this fixture."""
+MAXIMUM_WER = 0.14
+
+
+@dataclass(frozen=True, slots=True)
+class Miss:
+    utterance_id: str
+    reference: str
+    transcript: str
+    wer: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +56,7 @@ class Score:
     wer: float
     exact: float
     median_ms: float
+    misses: tuple[Miss, ...]
 
 
 def load_clip(path: Path, sample_rate: int) -> NDArray[np.float32]:
@@ -73,19 +84,30 @@ async def score(
     wers: list[float] = []
     exact = 0
     times: list[float] = []
+    misses: list[Miss] = []
     for utterance_id, clip in clips.items():
         started = time.perf_counter()
         result = await recognizer.transcribe(clip, partial=False)  # type: ignore[attr-defined]
         times.append((time.perf_counter() - started) * 1_000)
-        wers.append(word_error_rate(truth[utterance_id], result.text))
+        utterance_wer = word_error_rate(truth[utterance_id], result.text)
+        wers.append(utterance_wer)
         if normalize(truth[utterance_id]) == normalize(result.text):
             exact += 1
-    return Score(engine_name, float(np.mean(wers)), exact / len(clips), float(np.median(times)))
+        else:
+            misses.append(Miss(utterance_id, truth[utterance_id], result.text, utterance_wer))
+    return Score(
+        engine_name,
+        float(np.mean(wers)),
+        exact / len(clips),
+        float(np.median(times)),
+        tuple(misses),
+    )
 
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gate", action="store_true", help="apply the acceptance thresholds")
+    parser.add_argument("--verbose", action="store_true", help="print every non-exact utterance")
     parser.add_argument("--json", type=Path, help="write the scores here")
     arguments = parser.parse_args()
 
@@ -116,10 +138,37 @@ async def main() -> int:
     for entry in scores:
         exact = f"{entry.exact * 100:.0f}%"
         print(f"{entry.engine:24s} {entry.wer:>7.3f} {exact:>7s} {entry.median_ms:>7.0f}ms")
+        if arguments.verbose:
+            for miss in entry.misses:
+                heard = miss.transcript or "<empty>"
+                print(
+                    f"  {miss.utterance_id}: {miss.reference!r} -> {heard!r} (WER {miss.wer:.3f})"
+                )
 
     if arguments.json:
         arguments.json.write_text(
-            json.dumps([entry.__dict__ for entry in scores], indent=2), encoding="utf-8"
+            json.dumps(
+                [
+                    {
+                        "engine": entry.engine,
+                        "wer": entry.wer,
+                        "exact": entry.exact,
+                        "median_ms": entry.median_ms,
+                        "misses": [
+                            {
+                                "utterance_id": miss.utterance_id,
+                                "reference": miss.reference,
+                                "transcript": miss.transcript,
+                                "wer": miss.wer,
+                            }
+                            for miss in entry.misses
+                        ],
+                    }
+                    for entry in scores
+                ],
+                indent=2,
+            ),
+            encoding="utf-8",
         )
 
     if not arguments.gate:
@@ -131,6 +180,11 @@ async def main() -> int:
         problems.append(
             f"grammar recognition reached {constrained.exact:.2f} exact, below the "
             f"{REQUIRED_EXACT:.2f} needed to be usable"
+        )
+    if constrained.wer > MAXIMUM_WER:
+        problems.append(
+            f"grammar recognition reached {constrained.wer:.3f} WER, above the "
+            f"{MAXIMUM_WER:.3f} regression ceiling"
         )
     advantage = constrained.exact - open_vocab.exact
     if advantage < REQUIRED_ADVANTAGE:

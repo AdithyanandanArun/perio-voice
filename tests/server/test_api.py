@@ -216,6 +216,7 @@ def test_fixture_capture_route_is_physically_absent_without_exact_opt_in(
     disabled = create_app(FakeRecognizer(), Settings())
     assert "/api/fixture" not in {route.path for route in disabled.routes}
     with TestClient(disabled) as client:
+        assert client.get("/api/fixture/tts?id=acc-buccle-u01").status_code == 404
         assert (
             client.post(
                 "/api/fixture?pass=quiet&id=acc-buccle-u01", content=pcm_frame(0.1)
@@ -235,13 +236,22 @@ def test_fixture_capture_writes_private_16khz_mono_wav(
     tmp_path: Path,
 ) -> None:
     destination = tmp_path / "audio"
+    tts_directory = tmp_path / "tts"
+    tts_directory.mkdir()
+    tts_stimulus = b"RIFF-local-piper-stimulus"
+    (tts_directory / "acc-buccle-u01.wav").write_bytes(tts_stimulus)
     monkeypatch.setenv("PERIO_FIXTURE_CAPTURE", "1")
     monkeypatch.setattr("server.app.FIXTURE_AUDIO_DIR", destination)
+    monkeypatch.setattr("server.app.FIXTURE_TTS_DIR", tts_directory)
     enabled = create_app(FakeRecognizer(), Settings())
     assert "/api/fixture" in {route.path for route in enabled.routes}
 
     pcm = pcm_frame(0.2, milliseconds=125)
     with TestClient(enabled) as client:
+        stimulus = client.get(
+            "/api/fixture/tts?id=acc-buccle-u01",
+            headers={"origin": "http://127.0.0.1:5173"},
+        )
         result = client.post(
             "/api/fixture?pass=quiet&id=acc-buccle-u01",
             content=pcm,
@@ -250,11 +260,16 @@ def test_fixture_capture_writes_private_16khz_mono_wav(
                 "origin": "http://127.0.0.1:5173",
             },
         )
+    assert stimulus.status_code == 200
+    assert stimulus.headers["content-type"] == "audio/wav"
+    assert stimulus.headers["cache-control"] == "no-store"
+    assert stimulus.content == tts_stimulus
     assert result.status_code == 200
     assert result.headers["cache-control"] == "no-store"
     assert result.json() == {
         "id": "acc-buccle-u01",
         "pass": "quiet",
+        "source": "human",
         "samples": len(pcm) // 2,
         "durationMs": 125,
     }
@@ -269,6 +284,23 @@ def test_fixture_capture_writes_private_16khz_mono_wav(
     assert stat.S_IMODE(wav_path.stat().st_mode) == 0o600
     assert stat.S_IMODE(wav_path.parent.stat().st_mode) == 0o700
 
+    human_wav = wav_path.read_bytes()
+    replay_pcm = pcm_frame(0.35, milliseconds=125)
+    with TestClient(enabled) as client:
+        replay = client.post(
+            "/api/fixture?pass=noise&id=acc-buccle-u01&source=tts-replay",
+            content=replay_pcm,
+            headers={"content-type": "application/octet-stream"},
+        )
+    assert replay.status_code == 200
+    assert replay.json()["source"] == "tts-replay"
+    replay_path = destination / "tts-replay" / "noise" / "acc-buccle-u01.wav"
+    assert replay_path.is_file()
+    # Automated playback must never replace a clinician's fixture with TTS.
+    assert wav_path.read_bytes() == human_wav
+    with wave.open(str(replay_path), "rb") as fixture:
+        assert fixture.readframes(fixture.getnframes()) == replay_pcm
+
 
 @pytest.mark.parametrize(
     ("path", "content", "headers", "expected_status"),
@@ -276,6 +308,12 @@ def test_fixture_capture_writes_private_16khz_mono_wav(
         ("/api/fixture", b"\x00\x00", {}, 400),
         ("/api/fixture?pass=quiet&id=not-in-the-manifest", b"\x00\x00", {}, 404),
         ("/api/fixture?pass=other&id=acc-buccle-u01", b"\x00\x00", {}, 404),
+        (
+            "/api/fixture?pass=quiet&id=acc-buccle-u01&source=remote-tts",
+            b"\x00\x00",
+            {},
+            404,
+        ),
         ("/api/fixture?pass=quiet&id=acc-buccle-u01", b"", {}, 400),
         ("/api/fixture?pass=quiet&id=acc-buccle-u01", b"\x00", {}, 400),
         (
@@ -307,6 +345,30 @@ def test_fixture_capture_rejects_unaddressed_or_malformed_input(
         response = client.post(path, content=content, headers=headers)
     assert response.status_code == expected_status
     assert not list(destination.rglob("*.wav")) if destination.exists() else True
+
+
+@pytest.mark.parametrize(
+    ("path", "headers", "expected_status"),
+    [
+        ("/api/fixture/tts", {}, 400),
+        ("/api/fixture/tts?id=not-in-the-manifest", {}, 404),
+        (
+            "/api/fixture/tts?id=acc-buccle-u01",
+            {"origin": "https://malicious.example"},
+            403,
+        ),
+    ],
+)
+def test_fixture_tts_rejects_unaddressed_or_cross_origin_requests(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+    headers: dict[str, str],
+    expected_status: int,
+) -> None:
+    monkeypatch.setenv("PERIO_FIXTURE_CAPTURE", "1")
+    with TestClient(create_app(FakeRecognizer(), Settings())) as client:
+        response = client.get(path, headers=headers)
+    assert response.status_code == expected_status
 
 
 def test_fixture_capture_rejects_oversized_pcm_before_writing(

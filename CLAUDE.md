@@ -1,7 +1,7 @@
 # Perio Voice — working context
 
 Local clinical voice intelligence layer for periodontal charting. Browser mic →
-local Faster-Whisper → a deterministic clinical pipeline that decides what
+local context-routed grammar/Whisper recognition → a deterministic clinical pipeline that decides what
 belongs in the chart, what it means, and where it goes.
 
 **The product is not the transcription.** It is the layer between recognition and
@@ -17,8 +17,10 @@ node scripts/verify-quality.mjs  # lint, types, all tests, build — both stacks
 node scripts/evaluate-clinical.mjs   # chart-level metrics, 11 cohorts
 uv run python scripts/evaluate_acoustic.py   # word error rate under noise
 uv run python scripts/calibrate_speaker.py   # re-measure speaker thresholds
+node scripts/verify-acoustic-replay.mjs      # Piper stimuli + loudspeaker replay contract
+PERIO_FIXTURE_CAPTURE=1 npm run dev           # opt-in human/TTS fixture recorder
 
-# the acceptance ledger — 26 gates, each naming the one command that decides it
+# the acceptance ledger — 42 gates, each naming the one command that decides it
 node ~/.claude/skills/unlazy/scripts/gate-check.mjs --status GATES.md
 node ~/.claude/skills/unlazy/scripts/gate-check.mjs --reverify --timeout 600 GATES.md
 ```
@@ -69,11 +71,16 @@ node ~/.claude/skills/unlazy/scripts/gate-check.mjs --reverify --timeout 600 GAT
 
 These each cost real debugging. They are not obvious from the code.
 
-- **The evaluation cannot see recognition quality.** `evaluate-clinical.mjs`
-  supplies transcripts and skips the recognizer; the acoustic fixture is 11
-  seconds of a political speech. So WER 0.000 and "the voice recognition is
-  terrible" are both true at once. Do not quote the harness as evidence about
-  dental speech. Fixing this is Phase 1 of `next.md`.
+- **The transcript-only clinical evaluation cannot see recognition quality.**
+  Use `scripts/evaluate_recognizers.py` for the checked-in short dental fixture,
+  and `scripts/evaluate_dental.py` plus `evaluate-clinical.mjs --transcripts`
+  for private recorded dental audio. Never use the JFK acoustic smoke fixture as
+  evidence about dental speech.
+- **Loudspeaker TTS is an integration fixture, not a clinician corpus.** It
+  crosses the actual speakers, room, microphone and PCM worklet, which direct WAV
+  decoding cannot, but it is still one synthetic Piper voice. Evaluate it with
+  `--audio-root evaluation/fixtures/dental/audio/tts-replay`; never present its
+  score as human or clinical performance.
 - **The JFK fixture has ~22 reference words, so one word error is 0.045 WER.**
   Differences of 1–2 word errors are *not* evidence. A confident conclusion was
   drawn twice from exactly that and was wrong both times.
@@ -116,11 +123,16 @@ These each cost real debugging. They are not obvious from the code.
 
 ## Status
 
-26/26 gates met and re-verified. 155 frontend tests, 65 Python tests. Clinical
-eval 86/86 exact match, 0/24 false chart entries, parser p95 < 0.3 ms.
-Recognition quality is the open problem — see `next.md`.
+40/42 gates met and re-verified; G18 and G33 are explicitly abandoned because
+the classical speaker profile does not separate voices at clinical utterance
+lengths. 182 frontend tests and 85 Python tests pass. Clinical evaluation remains
+86/86 exact match with 0/24 false chart entries. On the checked-in short dental
+fixture, grammar recognition is 80% exact at 0.132 WER versus Whisper at 33–40%
+exact across immediate runs. The full dental manifest can now be replayed through
+the laptop speakers automatically with the pinned Piper voice; a consented human
+quiet/noise corpus remains necessary only for real-clinic validation.
 
 `ARCHITECTURE.md` ends with **"What is not built"**. Read it before promising
-anything: recorded operatory audio, a dental speech corpus, trained speaker
+anything: recorded operatory audio, a real-clinician dental speech corpus, trained speaker
 embeddings, overlapping speech, a model-worker pool, persistence and metric
 export do not exist.

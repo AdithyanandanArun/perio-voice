@@ -4,7 +4,9 @@ Perio Voice is a local clinical voice intelligence layer for periodontal
 charting. Browser microphone audio is streamed as 16 kHz PCM to a local
 Faster-Whisper service; final transcripts pass through a deterministic clinical
 pipeline that decides what belongs in the chart, what it means, and where it
-goes. No audio leaves the machine, and no browser-vendor speech API is used.
+goes. No audio leaves the machine, and no browser-vendor recognition API is
+used. The opt-in developer fixture uses a pinned local Piper TTS voice solely to
+replay test prompts through the laptop speakers.
 
 The point is not the transcription. It is the layer between recognition and the
 record:
@@ -100,8 +102,15 @@ Measured on the 30 spoken dental phrases in
 
 | engine | word error rate | exact match | ms/utterance |
 | --- | ---: | ---: | ---: |
-| Whisper `tiny.en`, beam 5 | 0.787 | 40% | 272 |
-| grammar-constrained | **0.060** | **93%** | **163** |
+| Whisper `tiny.en`, beam 5 | 0.820–0.910 | 33–40% | 280–315 |
+| grammar-constrained | **0.132** | **80%** | **167–171** |
+
+These are four immediate runs on the reference CPU after the grammar safety
+changes. Whisper's temperature fallback makes its short-utterance result vary;
+the grammar result was stable. The grammar previously reached 93% only while
+context-specific narrowing could force one legitimate clinical word onto a
+different word. Removing that unsafe narrowing deliberately traded raw exact
+match for the invariant that the recognizer may abstain but may not substitute.
 
 A larger acoustic model is not available to this approach: `vosk-model-en-us-0.22`
 (2.7 GB) refuses runtime grammars outright, so it can only run unconstrained, and
@@ -231,6 +240,43 @@ word-perfect transcript can still produce a wrong chart.
 [EVALUATION.md](./EVALUATION.md) has the corpus, the thresholds, the current
 numbers and — importantly — what they do and do not establish.
 
+### Automated loudspeaker fixture
+
+The developer recorder can create a room-and-device fixture without someone
+reading all 138 prompts. It speaks each phrase with the pinned local Piper
+en_US-lessac-medium voice,
+plays it through the laptop speakers, records it through the microphone and the
+same PCM worklet as live recognition, then adds deterministic suction/handpiece
+audio during the noise pass. Echo cancellation is disabled only for this replay
+profile so the microphone can hear the laptop; normal recognition keeps it on.
+
+Set the laptop speakers to an ordinary conversational volume, then run:
+
+```bash
+PERIO_FIXTURE_CAPTURE=1 npm run dev
+# Open http://127.0.0.1:5173/?record=1 and select “Record all … with Piper TTS”.
+
+uv run python scripts/evaluate_dental.py \
+  --audio-root evaluation/fixtures/dental/audio/tts-replay \
+  --json /tmp/tts-replay-transcripts.json
+node scripts/evaluate-clinical.mjs --transcripts /tmp/tts-replay-transcripts.json
+```
+
+The first inaudible clip stops the run instead of saving silence; raise the
+speaker volume and resume. TTS recordings are isolated under the git-ignored
+`audio/tts-replay/` tree and cannot overwrite human recordings. This fixture
+exercises speakers, room acoustics, microphone, resampling, recognition and the
+clinical pipeline. It is still synthetic speech and therefore does not establish
+accuracy for clinician voices, accents or a real operatory.
+
+The Piper WAVs are checked in so normal setup remains offline after repository
+and ASR-model setup. If the prompt manifest changes, regenerate and re-gate them:
+
+```bash
+uv run --with piper-tts python scripts/generate_dental_replay.py
+node scripts/verify-acoustic-replay.mjs
+```
+
 ## Troubleshooting
 
 - **ASR offline:** ensure `npm run dev` is still running and port 8000 is free,
@@ -240,6 +286,10 @@ numbers and — importantly — what they do and do not establish.
   in the interface.
 - **Microphone permission denied:** allow microphone access for `127.0.0.1` in
   browser site settings, then retry. Capture APIs require localhost or HTTPS.
+- **TTS replay is unavailable or silent:** use the laptop speakers rather than
+  headphones, raise output to a normal conversational level, keep the microphone
+  unobstructed, and confirm `/api/fixture/tts?id=acc-buccle-u01` responds while
+  the capture-enabled service is running.
 - **No speech detected:** verify the input device and lower
   `ASR_VAD_RMS_THRESHOLD` gradually. Do not set it so low that room noise starts
   utterances.
