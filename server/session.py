@@ -119,10 +119,14 @@ class AsrSession:
                 item = self._queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            # `get_nowait()` claims one unfinished item. A retained final is
+            # put back below and gets a fresh queue count; balance this claim
+            # first or two finals arriving in one event-loop turn leave
+            # `stop()` waiting forever after both have decoded.
+            self._queue.task_done()
             if isinstance(item, DecodeRequest) and item.kind is DecodeKind.PARTIAL:
                 self._dropped_partials += 1
                 self.telemetry.count("partials_dropped")
-                self._queue.task_done()
             else:
                 retained.append(item)
         for item in retained:
@@ -155,8 +159,10 @@ class AsrSession:
 
     async def _decode(self, request: DecodeRequest) -> None:
         final = request.kind is DecodeKind.FINAL
+        queue_wait_ms = 0.0
         if request.queued_at_ms:
-            self.telemetry.observe("queue_wait_ms", max(0.0, monotonic_ms() - request.queued_at_ms))
+            queue_wait_ms = max(0.0, monotonic_ms() - request.queued_at_ms)
+            self.telemetry.observe("queue_wait_ms", queue_wait_ms)
 
         # Every model tested hallucinates confident words on sub-half-second
         # audio, so the cheapest defence is not to ask it.
@@ -171,6 +177,8 @@ class AsrSession:
                     "decodeMs": 0,
                     "startedAtMs": round(request.started_at_ms, 2),
                     "endedAtMs": round(request.ended_at_ms, 2),
+                    "lastVoicedAtMs": round(request.last_voiced_at_ms, 2),
+                    "queueWaitMs": round(queue_wait_ms, 2),
                     "droppedPartials": self._dropped_partials,
                     "words": [],
                     "reason": "too_short",
@@ -200,6 +208,8 @@ class AsrSession:
                         "decodeMs": 0,
                         "startedAtMs": round(request.started_at_ms, 2),
                         "endedAtMs": round(request.ended_at_ms, 2),
+                        "lastVoicedAtMs": round(request.last_voiced_at_ms, 2),
+                        "queueWaitMs": round(queue_wait_ms, 2),
                         "droppedPartials": self._dropped_partials,
                         "words": [],
                         "reason": assessment.reason,
@@ -234,6 +244,8 @@ class AsrSession:
             "decodeMs": result.decode_ms,
             "startedAtMs": round(request.started_at_ms, 2),
             "endedAtMs": round(request.ended_at_ms, 2),
+            "lastVoicedAtMs": round(request.last_voiced_at_ms, 2),
+            "queueWaitMs": round(queue_wait_ms, 2),
             "droppedPartials": self._dropped_partials,
             "engine": result.engine,
             "unknownRatio": round(result.unknown_ratio, 4),

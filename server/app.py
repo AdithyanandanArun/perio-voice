@@ -591,4 +591,16 @@ def _write_fixture_wav(destination: Path, pcm: bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def create_replay_app() -> FastAPI:
+    """Build the isolated, unauthenticated app used only by local replay checks.
+
+    Production still imports ``app`` below and therefore always keeps the normal
+    account boundary.  The benchmark process has no browser-facing port and is
+    started on a loopback-only ephemeral test port by its verifier; disabling
+    authentication there lets the verifier exercise the actual WebSocket/audio
+    path without inventing credentials or weakening the shipped server.
+    """
+    return create_app(auth_required=False)
+
+
 app = create_app()

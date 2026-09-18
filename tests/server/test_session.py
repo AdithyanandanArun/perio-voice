@@ -50,6 +50,8 @@ async def test_session_sends_partial_final_metrics_and_stop() -> None:
     final = next(message for message in messages if message["type"] == "final")
     assert final["text"] == "three four five"
     assert final["decodeMs"] == 4
+    assert final["lastVoicedAtMs"] == 200
+    assert final["queueWaitMs"] >= 0
     assert final["words"][0]["word"] == "three"
 
 
@@ -77,3 +79,24 @@ async def test_latest_partial_wins_when_decode_queue_is_busy() -> None:
     assert len(finals) == 1
     assert finals[0]["utteranceId"] == 6
     assert stopped["droppedPartials"] >= 4
+
+
+@pytest.mark.asyncio
+async def test_stop_completes_when_multiple_finals_arrive_before_the_worker_runs() -> None:
+    recognizer = FakeRecognizer()
+    await recognizer.load()
+    messages: list[dict[str, Any]] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    session = AsrSession(recognizer, Settings(), send)
+    await session.start()
+    audio = np.ones(1_600, dtype=np.float32)
+    await session._enqueue(DecodeRequest(1, DecodeKind.FINAL, audio, 0, 100))
+    await session._enqueue(DecodeRequest(2, DecodeKind.FINAL, audio, 100, 200))
+    await asyncio.wait_for(session.stop(300), timeout=1)
+    await session.close()
+
+    finals = [message for message in messages if message["type"] == "final"]
+    assert [message["utteranceId"] for message in finals] == [1, 2]

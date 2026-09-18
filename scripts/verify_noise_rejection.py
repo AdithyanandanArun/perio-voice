@@ -121,12 +121,16 @@ async def main() -> int:
     stimuli = bursts()
 
     leaked: list[tuple[str, str]] = []
-    for label, audio in stimuli:
+    for index, (label, audio) in enumerate(stimuli, start=1):
+        if index == 1 or index % 25 == 0:
+            print(f"protected replay {index}/{len(stimuli)}: {label}", flush=True)
         leaked.extend((label, text) for text in await texts_for(recognizer, settings, audio))
 
     ungated = replace(settings, speech_presence_threshold=0.0)
     control: list[tuple[str, str]] = []
-    for label, audio in stimuli:
+    for index, (label, audio) in enumerate(stimuli, start=1):
+        if index == 1 or index % 25 == 0:
+            print(f"negative-control replay {index}/{len(stimuli)}: {label}", flush=True)
         control.extend((label, text) for text in await texts_for(recognizer, ungated, audio))
     clinical_control = [(label, text) for label, text in control if looks_clinical(text)]
 

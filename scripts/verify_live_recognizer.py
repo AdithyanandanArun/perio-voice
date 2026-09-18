@@ -18,6 +18,10 @@ Latency is measured from the server's endpoint timestamp to the moment the final
 arrives at the client, which is queue wait behind a partial plus decode plus
 transport. Both processes read CLOCK_MONOTONIC, so the two timestamps compare.
 
+The report also records last-voiced-frame to final arrival. This is the
+clinician-visible latency: endpoint-to-final alone excludes trailing silence and
+can look good while a clinician is still waiting for the endpointer.
+
 Streaming faster than real time is the pessimistic direction: partials are
 requested more often per wall-clock second, so finals queue behind them more.
 
@@ -78,6 +82,9 @@ class LiveStats:
     def __init__(self) -> None:
         self.latencies_ms: list[float] = []
         self.decode_ms: list[int] = []
+        self.queue_wait_ms: list[float] = []
+        self.last_voice_to_final_ms: list[float] = []
+        self.missing_last_voice_timing = 0
         self.split: list[str] = []
         self.finals: list[list[str]] = []
         """The non-empty finals of each recording, in decode order."""
@@ -128,6 +135,24 @@ class LiveServiceModel:
                         if str(message.get("text", "")).strip():
                             self.stats.latencies_ms.append(arrived - float(message["endedAtMs"]))
                             self.stats.decode_ms.append(int(message["decodeMs"]))
+                            queue_wait = message.get("queueWaitMs")
+                            if (
+                                isinstance(queue_wait, int | float)
+                                and not isinstance(queue_wait, bool)
+                                and queue_wait >= 0
+                            ):
+                                self.stats.queue_wait_ms.append(float(queue_wait))
+                            last_voiced = message.get("lastVoicedAtMs")
+                            if (
+                                isinstance(last_voiced, int | float)
+                                and not isinstance(last_voiced, bool)
+                                and last_voiced <= arrived
+                            ):
+                                self.stats.last_voice_to_final_ms.append(
+                                    arrived - float(last_voiced)
+                                )
+                            else:
+                                self.stats.missing_last_voice_timing += 1
                     elif kind == "stopped":
                         self.stats.dropped_partials += int(message.get("droppedPartials", 0))
                         return
@@ -172,7 +197,15 @@ def start_service(port: int, log: Path) -> tuple[subprocess.Popen[bytes], dict[s
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("wb") as sink:
         process = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "server.app:app", "--port", str(port)],
+            [
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "server.app:create_replay_app",
+                "--factory",
+                "--port",
+                str(port),
+            ],
             cwd=ROOT,
             env=environment,
             stdout=sink,
@@ -240,6 +273,15 @@ def main() -> int:
         # Scored as the pipeline receives them: one utterance per final.
         if len(texts) > 1:
             result["finals"] = texts
+    payload["liveTiming"] = {
+        "endpointToFinalMs": stats.latencies_ms,
+        "lastVoiceToFinalMs": stats.last_voice_to_final_ms,
+        "decodeMs": stats.decode_ms,
+        "queueWaitMs": stats.queue_wait_ms,
+        "textFinals": len(stats.latencies_ms),
+        "timedLastVoiceFinals": len(stats.last_voice_to_final_ms),
+        "missingLastVoiceTiming": stats.missing_last_voice_timing,
+    }
     arguments.out.parent.mkdir(parents=True, exist_ok=True)
     arguments.out.write_text(json.dumps(payload, indent=1), encoding="utf-8")
     chart, passed, cases, false, nonchart = chart_score(arguments.out)
@@ -251,8 +293,18 @@ def main() -> int:
     )
     print(
         f"endpoint -> final: p50 {p50:.0f} ms, p95 {p95:.0f} ms; decode p50 "
-        f"{statistics.median(stats.decode_ms) if stats.decode_ms else 0:.0f} ms; partials "
+        f"{statistics.median(stats.decode_ms) if stats.decode_ms else 0:.0f} ms, p95 "
+        f"{percentile([float(value) for value in stats.decode_ms], 0.95):.0f} ms; queue p95 "
+        f"{percentile(stats.queue_wait_ms, 0.95):.0f} ms; partials "
         f"{stats.partials}, dropped {stats.dropped_partials}"
+    )
+    last_voice_p50 = (
+        statistics.median(stats.last_voice_to_final_ms) if stats.last_voice_to_final_ms else 0
+    )
+    last_voice_p95 = percentile(stats.last_voice_to_final_ms, 0.95)
+    print(
+        f"last voice -> final: p50 {last_voice_p50:.0f} ms, p95 {last_voice_p95:.0f} ms; "
+        f"missing timing {stats.missing_last_voice_timing}"
     )
     for text in stats.split:
         print(f"  split: {text}")

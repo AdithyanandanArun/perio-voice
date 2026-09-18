@@ -65,6 +65,7 @@ def test_segmenter_emits_start_partial_and_final_with_preroll() -> None:
     assert final.kind is DecodeKind.FINAL
     assert final.utterance_id == partial.utterance_id
     assert final.audio_ms >= partial.audio_ms
+    assert final.last_voiced_at_ms == 400
     assert not segmenter.in_speech
 
 

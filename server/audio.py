@@ -33,6 +33,8 @@ class DecodeRequest:
     sample_rate: int = 16_000
     """Set when the request entered the decode queue, for queue-wait telemetry."""
     queued_at_ms: float = 0.0
+    """Server monotonic timestamp of the final voiced frame in this utterance."""
+    last_voiced_at_ms: float = 0.0
 
     @property
     def audio_ms(self) -> int:
@@ -77,6 +79,7 @@ class SpeechSegmenter:
         self._voiced_samples = 0
         self._silence_samples = 0
         self._since_partial_samples = 0
+        self._last_voiced_at_ms = 0.0
 
     @property
     def in_speech(self) -> bool:
@@ -101,6 +104,7 @@ class SpeechSegmenter:
             self._voiced_samples = len(audio)
             self._silence_samples = 0
             self._since_partial_samples = 0
+            self._last_voiced_at_ms = received_at_ms
             self._pre_roll.clear()
             self._pre_roll_samples = 0
             events.append(SpeechStarted(self._utterance_id, self._started_at_ms))
@@ -110,6 +114,7 @@ class SpeechSegmenter:
             self._since_partial_samples += len(audio)
             if voiced:
                 self._voiced_samples += len(audio)
+                self._last_voiced_at_ms = received_at_ms
             self._silence_samples = 0 if voiced else self._silence_samples + len(audio)
 
         utterance_ms = self._utterance_samples / self.settings.sample_rate * 1_000
@@ -184,6 +189,7 @@ class SpeechSegmenter:
             started_at_ms=self._started_at_ms,
             ended_at_ms=ended_at_ms,
             sample_rate=self.settings.sample_rate,
+            last_voiced_at_ms=self._last_voiced_at_ms,
         )
 
     def _finish(self, ended_at_ms: float) -> DecodeRequest:
@@ -201,3 +207,4 @@ class SpeechSegmenter:
         self._voiced_samples = 0
         self._silence_samples = 0
         self._since_partial_samples = 0
+        self._last_voiced_at_ms = 0.0
