@@ -11,6 +11,16 @@ dependencies = [
   "vosk>=0.3.45,<0.4",
 ]
 
+[project.optional-dependencies]
+# CUDA 12 runtime libraries for GPU inference. CTranslate2 4.x loads cuBLAS and
+# cuDNN 9 at decode time and does not ship them, so without these a CUDA device
+# is detected but the first decode fails with "libcublas.so.12 is not found".
+# Kept optional: they are over a gigabyte and CPU-only machines never need them.
+gpu = [
+  "nvidia-cublas-cu12>=12.4,<13",
+  "nvidia-cudnn-cu12>=9.1,<10",
+]
+
 [dependency-groups]
 dev = [
   "httpx2>=2.13,<3",
