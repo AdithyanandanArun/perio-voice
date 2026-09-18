@@ -52,9 +52,14 @@ function range(from: number, to: number): number[] {
 }
 
 /**
- * The conventional serpentine path: across the maxillary arch on the buccal,
- * back along the lingual, then the same for the mandibular arch. Charting in a
- * fixed order is what makes "next", "back" and "resume" unambiguous.
+ * All-buccal-then-all-lingual path: one continuous sweep across every buccal
+ * station — upper arch 1→16, then lower arch 17→32 — followed by the same
+ * sweep on the lingual surface. Universal numbering reads the upper row
+ * 1..16 and the lower row 32..17 left to right on the chart, so both passes
+ * trace the same "U" shape rather than zig-zagging tooth by tooth. Charting
+ * in a fixed order is what makes "next", "back" and "resume" unambiguous.
+ * This is the single place the full-mouth order is defined; everything else
+ * (advance, skip, resume, auto-chart, progress messages) derives from it.
  */
 function buildStationOrder(): Station[] {
   const stations: Station[] = [];
@@ -62,9 +67,9 @@ function buildStationOrder(): Station[] {
     for (const tooth of teeth) stations.push({ tooth, surface });
   };
   push(range(1, 16), 'buccal');
-  push(range(16, 1), 'lingual');
   push(range(17, 32), 'buccal');
-  push(range(32, 17), 'lingual');
+  push(range(1, 16), 'lingual');
+  push(range(17, 32), 'lingual');
   return stations;
 }
 

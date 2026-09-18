@@ -48,13 +48,15 @@ describe('full-mouth station order', () => {
     expect(seen.size).toBe(64);
   });
 
-  it('follows the conventional serpentine path between arches', () => {
+  it('follows the all-buccal-then-all-lingual path between arches', () => {
+    // Updated for the all-buccal-then-all-lingual order: the buccal sweep
+    // (upper 1..16, lower 17..32) completes before any lingual station.
     expect(stationAt(0)).toEqual({ tooth: 1, surface: 'buccal' });
     expect(stationAt(15)).toEqual({ tooth: 16, surface: 'buccal' });
-    expect(stationAt(16)).toEqual({ tooth: 16, surface: 'lingual' });
-    expect(stationAt(31)).toEqual({ tooth: 1, surface: 'lingual' });
-    expect(stationAt(32)).toEqual({ tooth: 17, surface: 'buccal' });
-    expect(stationAt(63)).toEqual({ tooth: 17, surface: 'lingual' });
+    expect(stationAt(16)).toEqual({ tooth: 17, surface: 'buccal' });
+    expect(stationAt(31)).toEqual({ tooth: 32, surface: 'buccal' });
+    expect(stationAt(32)).toEqual({ tooth: 1, surface: 'lingual' });
+    expect(stationAt(63)).toEqual({ tooth: 32, surface: 'lingual' });
   });
 
   it('maps teeth to quadrants', () => {
