@@ -66,6 +66,7 @@ export {
 } from './workflow';
 export { createInitialSession, latencySummary, percentile } from './session';
 export { processUtterance } from './pipeline';
+export { processAutoChart, splitAutoChartClauses } from './autoChart';
 export {
   applyTranscript,
   clearCurrentRecord,

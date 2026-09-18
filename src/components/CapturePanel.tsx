@@ -130,21 +130,25 @@ export function CapturePanel({
 
       <form className="simulator" onSubmit={onSubmit}>
         <label htmlFor="transcript-input">Transcript simulator</label>
+        <textarea
+          id="transcript-input"
+          value={simulatedTranscript}
+          onChange={(event) => onSimulatedChange(event.target.value)}
+          placeholder="Try: three four five"
+          autoComplete="off"
+          rows={2}
+          aria-describedby="auto-chart-help"
+        />
         <div className="input-row">
-          <input
-            id="transcript-input"
-            value={simulatedTranscript}
-            onChange={(event) => onSimulatedChange(event.target.value)}
-            placeholder="Try: three four five"
-            autoComplete="off"
-          />
           <button className="button button-primary" type="submit" disabled={!simulatedTranscript.trim()}>
             <Sparkles size={18} aria-hidden="true" />
             Process
           </button>
         </div>
-        <p className="helper-text">
-          Deterministic fallback for testing the same clinical parser without microphone audio.
+        <p className="helper-text" id="auto-chart-help">
+          Use a normal phrase, or separate complete station directives with a semicolon or new line.
+          Automatic batches require a tooth and surface in every directive; if one is unsafe, none
+          of the batch is charted.
         </p>
       </form>
 

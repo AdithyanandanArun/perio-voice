@@ -21,6 +21,7 @@ const EVENT_LABELS: Record<ClinicalEventKind, string> = {
 };
 
 const STAGE_LABELS: Record<StageName, string> = {
+  auto_chart: 'Automatic charting',
   speaker: 'Speaker',
   staleness: 'Context version',
   lexicon: 'Lexicon',

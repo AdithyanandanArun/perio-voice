@@ -367,6 +367,22 @@ dropped value in a group of three does not produce one wrong measurement; it
 produces three measurements at the wrong sites. A metric that cannot tell those
 apart cannot see the failure this system exists to prevent.
 
+### Automatic-chart transactions
+
+`processAutoChart` has a separate deterministic test tier for multi-station
+dictation. A semicolon- or newline-delimited batch is accepted only when every
+directive names its tooth and surface, has no unparsed or acoustically ambiguous
+terms, produces a journalled change, and passes the existing relevance, range,
+sequence and stale-context guards. Tests use valid two-station notes alongside
+later-clause out-of-range values, conversational language, missing locations and
+stale observations; every rejected control must leave chart state, journal and
+clinical context byte-for-byte equivalent to the state before the note.
+
+The p95 planning budget is below 5 ms in the deterministic browser-domain test.
+It deliberately excludes acoustic decode time and is not a clinical accuracy
+claim: real clinician and operatory recordings are still required before any
+clinical-performance claim.
+
 ### What the corpus found
 
 The first full run failed one case, and it was a real defect rather than a wrong

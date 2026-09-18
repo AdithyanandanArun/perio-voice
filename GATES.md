@@ -224,6 +224,50 @@ Scope: Milestone 1 delivered active local Faster-Whisper recognition and a deter
   EXPECT: DOCUMENTATION_GATE_PASSED
   EVIDENCE: automatic-evidence=v1; definition-sha256=19a0cd1137bb98a8f1f6a522a8be8b55a9d7550a36183eae4606ac7bb5a363c1; exit=0; EXPECT=matched; output-sha256=cea4823b4682d434666fcd9ce41cc5057e7b1713953dcb358201c4f4d7eafb3c; output-bytes=26; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=b6fef52e3a67/13 entries
 
+## Milestone 6 — high-accuracy recognition on the GPU
+
+- [x] G42: the service runs large-v3 on the GPU when one is usable, keeps the CPU recognizer otherwise, and lets any explicit ASR_* setting win
+  CHECK: uv run --extra gpu pytest -q tests/server/test_config.py
+  EXPECT: /\b5 passed\b/
+  EVIDENCE: automatic-evidence=v1; definition-sha256=16a45d569adc5882c3f110b4bc624d9cf33a15d8b23f3d1a68b74cce2c39c022; exit=0; EXPECT=matched; output-sha256=bd5201fad773316bbfda2cfee7833ff2d8db356db81550c537f47ba44de0ed2d; output-bytes=98; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=1cc423e6f446/13 entries
+
+- [x] G43: the shipped recognizer (large-v3 with the shared example prompt) reaches 90% chart exact match on every replay recording with at most 2 false chart entries, beats the grammar recognizer it replaced by 25 points, and decodes at p95 within 700 ms
+  CHECK: uv run --extra gpu python scripts/bakeoff.py --gate
+  EXPECT: BAKEOFF GATE PASS shipped
+  EVIDENCE: automatic-evidence=v1; definition-sha256=9f8a7dade8cc14f7f144ad36b8220b24ce588f9aa37ab86f77dfa950e12834bb; exit=0; EXPECT=matched; output-sha256=374da9d2179556a2eef9d7ec1587858ec4c87c4ac182b2d227d6b95b594c49e8; output-bytes=270; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
+
+- [x] G44: streamed through the running service over /ws/asr as the browser streams them, the replay recordings keep 90% chart exact match with at most 2 false entries and 3 split utterances, and a final arrives within 700 ms of the endpoint at p95, on large-v3 on the GPU
+  CHECK: uv run --extra gpu python scripts/verify_live_recognizer.py --gate
+  EXPECT: LIVE RECOGNIZER PASS large-v3 on cuda
+  EVIDENCE: automatic-evidence=v1; definition-sha256=7e2863eee41086a8ed42b3c09d67f85463df65d2ccccc5cda31058aacc2da3ae; exit=0; EXPECT=matched; output-sha256=9d56857249a900180d4cc0d09e6e1a672614c5f190b02faeeecd7c6c3906b7cf; output-bytes=335; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=1cc423e6f446/13 entries
+
+- [x] G46: operatory noise bursts and saturated captures never become text on the shipped recognizer, on noise realizations the thresholds were not calibrated on, and removing the Silero check lets clinical-looking text through
+  CHECK: uv run --extra gpu python scripts/verify_noise_rejection.py
+  EXPECT: NOISE_REJECTION_GATE_PASSED
+  EVIDENCE: automatic-evidence=v1; definition-sha256=2cb91dea4f9a95fd8ab3a7a15027ca2174cef833b393629b75f81234d3dfa798; exit=0; EXPECT=matched; output-sha256=bd7608bb23df8b96d12c3084d426d73987cfee007c5def268a0eb86a0ac278df; output-bytes=439; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=1cc423e6f446/13 entries
+
+- [x] G45: setup, configuration, and evaluation documentation describes the GPU recognizer, how it is enabled, what was measured, and that the replay recordings are one synthetic voice
+  CHECK: node scripts/verify-documentation.mjs
+  EXPECT: DOCUMENTATION_GATE_PASSED
+  EVIDENCE: automatic-evidence=v1; definition-sha256=19a0cd1137bb98a8f1f6a522a8be8b55a9d7550a36183eae4606ac7bb5a363c1; exit=0; EXPECT=matched; output-sha256=cea4823b4682d434666fcd9ce41cc5057e7b1713953dcb358201c4f4d7eafb3c; output-bytes=26; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=635bb48c0f05/9 entries
+
+## Milestone 7 — safe, low-latency automatic charting
+
+- [x] G47: semicolon- or newline-delimited periodontal dictation becomes an atomic multi-station chart only when every clause explicitly names one tooth and surface, completely parses, and passes the existing relevance, sequence, correction, and staleness guards
+  CHECK: node scripts/verify-auto-chart.mjs
+  EXPECT: AUTO_CHART_GATE_PASSED
+  EVIDENCE: automatic-evidence=v1; definition-sha256=3ae2ba78dfae8ecd1b8b8f5ed0b2633a1a4425e9b91b9cc6a3d550c8fd5de784; exit=0; EXPECT=matched; output-sha256=f90d23c091b1f5260a118a27f6863e493df310e579769995627850a48e751582; output-bytes=309; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=1cc423e6f446/13 entries
+
+- [x] G48: the automatic-chart planner rejects malformed, ambiguous, conversational, out-of-range, and partially applicable batches without changing a single chart record, journal entry, or clinical context
+  CHECK: node scripts/verify-auto-chart-safety.mjs
+  EXPECT: AUTO_CHART_SAFETY_GATE_PASSED
+  EVIDENCE: automatic-evidence=v1; definition-sha256=ff62d374650d8850e64703b6d7888e85fbecfc02887bdce58336335bb0db95c8; exit=0; EXPECT=matched; output-sha256=e3747eff0d9af07f83a60c82c1fcecf4f70f412f52784683b0391f3eba5f04f7; output-bytes=354; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=1cc423e6f446/13 entries
+
+- [x] G49: automatic charting is wired into both ASR finals and the labelled simulator control, exposes its safety contract accessibly, and keeps p95 deterministic planning time below 5 ms
+  CHECK: node scripts/verify-auto-chart-ui.mjs
+  EXPECT: AUTO_CHART_UI_GATE_PASSED
+  EVIDENCE: automatic-evidence=v1; definition-sha256=6f02c144c99a81653d23a2b16182a9f84af7255c3b48a4575d453522e0957c97; exit=0; EXPECT=matched; output-sha256=a148370c783fc8e8b8a29bf1d2162e42fab9fedddf9de5131fcb7d6809b5f5d6; output-bytes=316; shell=/bin/sh; cwd=/home/adithyan/Documents/DSOLVE; path=1cc423e6f446/13 entries
+
 ABANDON: G33 The speaker profile does not separate voices at the durations this product uses, so no threshold can satisfy this gate. Measured against a six-second enrollment: at 0.5 s the enrolled speaker scored 0.7662 while another voice scored 0.9627, an inverted margin of -0.1965; separation only appears around four seconds, and a rolling four-second window still leaves +0.0007 on clean single-speaker audio. The original +0.0507 margin was measured on 5.5 s against 5.5 s, which is not the comparison the product makes. G31 and G32 fix the two real defects (enrollment now completes from one ordinary take, short utterances now reach a decision) and both pass. Discrimination needs a trained speaker-embedding model behind the same interface; attribution stays off by default and ARCHITECTURE.md and EVALUATION.md both state that it does not work.
 
 ABANDON: G18 This gate claims voice attribution accepts the enrolled clinician and blocks other speakers, and that claim is not true: the underlying discrimination does not exist at clinical utterance lengths, for the reasons recorded against G33. Its check re-runs the same calibration G33 abandons, so keeping it would assert the impossible twice, and narrowing its check to whatever still passes would be fitting the oracle to the outcome. The parts that do work remain gated elsewhere -- enrollment by G31, short-utterance decisions by G32, and the pipeline's hold-on-unknown behaviour by tests/server/test_speaker.py and tests/pipeline.test.ts under G8. Attribution stays off by default and the documentation states it does not work.

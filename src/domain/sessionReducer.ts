@@ -4,7 +4,8 @@ import {
   createInitialSession,
   updateContext,
 } from './clinicalEngine';
-import { applyWorkflowCommand, processUtterance, resolveConfirmation } from './pipeline';
+import { processAutoChart } from './autoChart';
+import { applyWorkflowCommand, resolveConfirmation } from './pipeline';
 import type { WorkflowCommand } from './grammar';
 import type {
   ClinicalSession,
@@ -39,7 +40,7 @@ export function sessionReducer(
     case 'transcript':
       return applyTranscript(session, action.transcript, action.timing);
     case 'utterance':
-      return processUtterance(session, action.input);
+      return processAutoChart(session, action.input).session;
     case 'context':
       return updateContext(session, action.patch, action.occurredAt);
     case 'clear-current':

@@ -41,12 +41,13 @@ body {
     var(--background);
 }
 
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button, select { cursor: pointer; }
 
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
+textarea:focus-visible,
 a:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 3px;
@@ -227,7 +228,7 @@ h1 { margin-bottom: 12px; font-size: clamp(32px, 4.8vw, 62px); line-height: 1.02
 .simulator { margin-top: 24px; }
 .simulator > label, .context-controls legend, .context-controls label > span, .surface-control > span { display: block; margin-bottom: 9px; color: var(--text-muted); font-size: 12px; font-weight: 700; letter-spacing: 0.03em; }
 .input-row { gap: 10px; }
-input, select {
+input, select, textarea {
   min-height: 46px;
   color: var(--text);
   background: #07191d;
@@ -236,6 +237,8 @@ input, select {
 }
 input { min-width: 0; flex: 1; padding: 10px 13px; }
 input::placeholder { color: #68868b; }
+textarea { width: 100%; min-height: 72px; padding: 11px 13px; resize: vertical; line-height: 1.45; }
+textarea::placeholder { color: #68868b; }
 select { width: 100%; padding: 8px 36px 8px 12px; }
 .helper-text { margin: 9px 0 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
 .phrase-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }

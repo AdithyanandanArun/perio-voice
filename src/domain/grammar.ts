@@ -108,7 +108,10 @@ export function parseIntents(
   context: ClinicalContext,
 ): ParseResult {
   const negation = resolveAssertions(resolved);
-  const consumed = new Set<number>(negation.consumed);
+  // A negation cue is part of a fully understood finding even though it does
+  // not name the finding itself. Strict automatic charting relies on this set
+  // to distinguish an understood "no bleeding" from an unknown word.
+  const consumed = new Set<number>([...negation.consumed, ...negation.cues]);
   const intents: Intent[] = [];
   const problems: string[] = [];
 

@@ -225,6 +225,14 @@ export function processUtterance(
       ? resolution.ambiguities.map((item) => item.chosen).join(', ')
       : 'no ambiguity',
   );
+  if (input.strictAutoChart && resolution.ambiguities.length > 0) {
+    trace.add('context', 'reject', 'strict automatic charting does not resolve acoustically ambiguous words');
+    return finish(
+      scored,
+      'rejected',
+      'Automatic charting requires an unambiguous directive; repeat this station as a normal phrase.',
+    );
+  }
 
   /* -------- 8. grammar -------- */
   let parse = parseIntents(resolution.tokens, session.context);
@@ -252,6 +260,14 @@ export function processUtterance(
   }
   if (rereadFrom !== null) {
     trace.add('grammar', 'adjust', `re-read as "${rereadFrom}" from recognizer alternatives`);
+  }
+  if (input.strictAutoChart && parse.leftover.length > 0) {
+    trace.add('grammar', 'reject', `${parse.leftover.length} unparsed token(s) in strict automatic charting`);
+    return finish(
+      scored,
+      'rejected',
+      'Automatic charting requires every word in a directive to be understood.',
+    );
   }
   trace.add(
     'grammar',

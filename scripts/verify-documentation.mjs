@@ -50,6 +50,9 @@ require('README.md', readme, [
   'scripts/evaluate_acoustic.py',
   'scripts/verify-quality.mjs',
   'Automated loudspeaker fixture',
+  'Safe multi-station auto chart',
+  'private shadow session',
+  'explicitly name a tooth and surface',
   // The GPU recognizer: what runs, how it is enabled, what it measured.
   'large-v3',
   'ASR_WORD_TIMESTAMPS',
@@ -96,6 +99,8 @@ require('ARCHITECTURE.md', architecture, [
   'Workstation GPU',
   'server/speech_presence.py',
   'cannot overwrite human fixture files',
+  'Automatic-chart transaction',
+  'src/domain/autoChart.ts',
 ]);
 
 require('EVALUATION.md', evaluation, [
@@ -123,6 +128,8 @@ require('EVALUATION.md', evaluation, [
   'scripts/verify_noise_rejection.py',
   'audio/tts-replay/noise/<utterance-id>.wav',
   /does not establish\s+clinical performance/i,
+  'Automatic-chart transactions',
+  'below 5 ms',
 ]);
 
 if (failures.length > 0) {

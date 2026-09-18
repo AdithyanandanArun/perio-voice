@@ -99,6 +99,25 @@ are converted only when the whole utterance fits the charting grammar; an extra
 value is rejected as a unit, which is what prevents a single insertion from
 shifting later sites.
 
+### Safe multi-station auto chart
+
+One normal final is charted through the ordinary low-latency clinical pipeline.
+For a deliberate multi-station note, separate complete directives with a
+semicolon or a new line:
+
+```text
+tooth fourteen buccal depths three four five; tooth fifteen lingual depths two three four
+```
+
+This is deterministic NLP — the versioned dental lexicon, context resolver and
+typed grammar — not a generative model. The batch is evaluated against a private shadow session
+first. Every directive must explicitly name a tooth and surface,
+fully parse, be clinically relevant, be free of acoustic ambiguity, and pass the
+same range, sequence, correction and stale-context guards as live speech. If any
+directive fails, **none** of the note changes the chart, journal or active
+location; the audit trail says why. Use ordinary one-station phrases to resolve
+an ambiguous word or a correction.
+
 ## Which recognizer, and why
 
 On a machine with a usable NVIDIA GPU the service runs **Whisper `large-v3`**

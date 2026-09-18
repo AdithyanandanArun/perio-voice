@@ -187,6 +187,12 @@ export interface UtteranceInput {
   speaker: SpeakerVerdict | null;
   /** Competing readings, best first. Consulted only when the best yields nothing. */
   alternatives?: RecognitionAlternative[];
+  /**
+   * Enables the strict all-or-nothing parser used only for deliberately
+   * delimiter-separated automatic-chart batches. Normal spoken charting keeps
+   * its established conversational grammar and confirmation behaviour.
+   */
+  strictAutoChart?: boolean;
   overrides?: PipelineOverrides;
 }
 
@@ -195,6 +201,7 @@ export interface UtteranceInput {
 /* ------------------------------------------------------------------ */
 
 export type StageName =
+  | 'auto_chart'
   | 'speaker'
   | 'staleness'
   | 'lexicon'

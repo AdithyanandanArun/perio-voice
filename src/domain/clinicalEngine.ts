@@ -7,7 +7,7 @@
  * pipeline in `pipeline.ts`.
  */
 
-import { processUtterance } from './pipeline';
+import { processAutoChart } from './autoChart';
 import { recordEvent } from './session';
 import { jumpToStation } from './workflow';
 import { measurementValues, recordAt } from './chart';
@@ -49,7 +49,7 @@ export function applyTranscript(
   transcript: string,
   timing: TranscriptTiming,
 ): ClinicalSession {
-  return processUtterance(session, simulatorInput(transcript, timing));
+  return processAutoChart(session, simulatorInput(transcript, timing)).session;
 }
 
 /** Operator-driven context change from the interface rather than from speech. */

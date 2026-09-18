@@ -190,6 +190,24 @@ before decoding): saturated captures are refused, Silero VAD must hear at least
 A refused final carries `reason: "no_speech"` or `"clipped"` and empty text, so
 nothing downstream can chart it; partials of refused audio are not decoded.
 
+### Automatic-chart transaction — `src/domain/autoChart.ts`
+
+Single clinical finals continue directly through `processUtterance`. A final
+containing two or more semicolon- or newline-delimited directives opts into a
+strict transaction instead. Each directive must explicitly name both its tooth
+and surface; it is then evaluated on a private immutable session using the same
+lexicon, relevance, context, grammar, negation, correction and sequence stages
+as a normal final. Strict mode additionally refuses unknown leftovers,
+recognizer alternatives and context-resolved acoustic homophones.
+
+Only a batch in which every directive produces one journalled chart change is
+published. A rejected, held, ignored, out-of-range, stale or partially parsed
+later directive discards the private session and records one rejection against
+the original session. This gives multi-station dictation all-or-nothing semantics
+without a remote NLP model, a second mutable chart path or a latency-dependent
+rollback. The browser sends ASR finals and simulator text through this same
+function, so their safety contract cannot diverge.
+
 Words a grammar lists but the lexicon lacks are dropped silently, and Vosk
 reports that only on C-level stderr. `scripts/verify_grammar_lexicon.py` gates
 coverage and `KNOWN_LEXICON_GAPS` records the genuine absences, so a clinical
