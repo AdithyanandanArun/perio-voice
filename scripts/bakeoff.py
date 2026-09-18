@@ -127,6 +127,21 @@ EXAMPLE_PROMPT = (
 )
 
 
+"""The example prompt extended with the phrasings the replay recordings showed
+it getting wrong. Priming "tooth" turned "correct that to three" into "correct
+that tooth. three" -- a navigation to tooth three instead of a correction -- and
+"depths three four five" into "next three four five", a workflow command. Each
+is added here in the exact form the chart expects."""
+EXAMPLE_PROMPT_2 = (
+    "three four five. depths three four five. two three four. three. four. five. "
+    "four no three. correct that to three. repeat that three four four. bleeding. "
+    "no bleeding. suppuration. plaque and calculus. b o p. p d three four five. "
+    "tooth fifteen. buccal. lingual. palatal. mesial buccal four. furcation class "
+    "two. mobility grade three. recession two. next tooth. skip this tooth. "
+    "resume. undo that."
+)
+
+
 class PromptedModel:
     """Adds decoding options to every transcribe call of a wrapped model."""
 
@@ -190,6 +205,38 @@ CANDIDATES: dict[str, Candidate] = {
         "turbo+examples",
         _config("large-v3-turbo", "cuda", "float16"),
         prompted(initial_prompt=EXAMPLE_PROMPT),
+    ),
+    "turbo+examples2": Candidate(
+        "turbo+examples2",
+        _config("large-v3-turbo", "cuda", "float16"),
+        prompted(initial_prompt=EXAMPLE_PROMPT_2),
+    ),
+    "large-v3+examples2": Candidate(
+        "large-v3+examples2",
+        _config("large-v3", "cuda", "float16"),
+        prompted(initial_prompt=EXAMPLE_PROMPT_2),
+    ),
+    "distil+examples2": Candidate(
+        "distil+examples2",
+        _config("distil-large-v3", "cuda", "float16"),
+        prompted(initial_prompt=EXAMPLE_PROMPT_2),
+    ),
+    # The shipped configuration: the prompt read from shared/dental-prompt.json
+    # through the same bias path the live recognizer uses, so what is measured
+    # here is exactly what runs.
+    "shipped": Candidate(
+        "shipped",
+        _config("large-v3", "cuda", "float16", bias="prompt"),
+        whisper_factory,
+    ),
+    # Same model and prompt, decoded with the options the live recognizer uses for
+    # finals: word timestamps on, which forces timestamp tokens into the decode.
+    "shipped-live": Candidate(
+        "shipped-live",
+        _config("large-v3", "cuda", "float16", bias="prompt"),
+        lambda config: PromptedModel(
+            whisper_factory(config), word_timestamps=True, without_timestamps=False
+        ),
     ),
     "turbo+hotwords": Candidate(
         "turbo+hotwords",
