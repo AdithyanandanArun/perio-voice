@@ -35,7 +35,7 @@ def test_service_uses_the_measured_gpu_profile_when_a_gpu_is_usable(
     settings = service_settings()
     assert settings.device == "cuda"
     assert settings.model_name == "large-v3"
-    assert settings.compute_type == "float16"
+    assert settings.compute_type == "int8_float16"
     assert settings.engine is Engine.WHISPER
     assert settings.word_timestamps is False
     # The prompted model recites clinical text on noise, so the GPU profile must

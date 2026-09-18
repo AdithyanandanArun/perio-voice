@@ -215,7 +215,11 @@ def service_settings() -> Settings:
         settings,
         device="cuda",
         model_name="large-v3" if unset("ASR_MODEL") else settings.model_name,
-        compute_type="float16" if unset("ASR_COMPUTE_TYPE") else settings.compute_type,
+        # large-v3 in pure float16 exceeds the 4 GiB VRAM on the supported
+        # laptop GPU. CTranslate2's int8_float16 keeps matmuls on the GPU,
+        # fits the card, and remains overridable with ASR_COMPUTE_TYPE=float16
+        # on a larger GPU.
+        compute_type="int8_float16" if unset("ASR_COMPUTE_TYPE") else settings.compute_type,
         engine=Engine.WHISPER if unset("ASR_ENGINE") else settings.engine,
         word_timestamps=False if unset("ASR_WORD_TIMESTAMPS") else settings.word_timestamps,
         speech_presence_threshold=(
