@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSoc
 from fastapi.responses import FileResponse
 
 from server.audio import decode_pcm16
-from server.config import Settings
+from server.config import Settings, service_settings
 from server.prompt import prompt_version
 from server.recognizer import ModelStatus, Recognizer
 from server.routed_recognizer import RoutedRecognizer
@@ -46,7 +46,7 @@ def create_app(
     *,
     preload: bool = True,
 ) -> FastAPI:
-    resolved_settings = settings or Settings.from_env()
+    resolved_settings = settings or service_settings()
     resolved_recognizer = recognizer or RoutedRecognizer(resolved_settings)
     telemetry = Telemetry()
     speaker_gate = SpeakerGate(resolved_settings)

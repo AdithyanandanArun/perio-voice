@@ -68,3 +68,24 @@ def ensure_cuda_libraries() -> tuple[str, ...]:
             break
         pending = still_pending
     return tuple(loaded)
+
+
+@lru_cache(maxsize=1)
+def cuda_available() -> bool:
+    """True only when a CUDA device exists *and* its runtime libraries loaded.
+
+    A device alone is not enough: CTranslate2 reports the RTX 4060 whether or not
+    cuBLAS and cuDNN are present, and without them the first decode fails. That
+    is a worse outcome than running on the CPU, so both are required.
+    """
+    try:
+        import ctranslate2
+
+        if ctranslate2.get_cuda_device_count() < 1:
+            return False
+    except Exception:
+        return False
+    loaded = ensure_cuda_libraries()
+    return any(name.startswith("libcublas.so") for name in loaded) and any(
+        name.startswith("libcudnn") for name in loaded
+    )

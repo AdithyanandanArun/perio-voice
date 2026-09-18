@@ -74,6 +74,7 @@ class FasterWhisperRecognizer:
         self.language = settings.language
         self.model_dir = settings.model_dir
         self.bias_prompt = settings.bias_prompt
+        self.word_timestamps = settings.word_timestamps
         self.beam_size = settings.beam_size
         self.status = ModelStatus.IDLE
         self.error: str | None = None
@@ -97,6 +98,11 @@ class FasterWhisperRecognizer:
 
     def _load_sync(self) -> object:
         from faster_whisper import WhisperModel
+
+        if self.device == "cuda":
+            from server.cuda_runtime import ensure_cuda_libraries
+
+            ensure_cuda_libraries()
 
         Path(self.model_dir).mkdir(parents=True, exist_ok=True)
         return WhisperModel(
@@ -130,9 +136,9 @@ class FasterWhisperRecognizer:
             # defence against a general model substituting everyday English for
             # clinical vocabulary.
             initial_prompt=dental_prompt() if self.bias_prompt else None,
-            word_timestamps=not partial,
+            word_timestamps=self.word_timestamps and not partial,
             vad_filter=False,
-            without_timestamps=partial,
+            without_timestamps=partial or not self.word_timestamps,
         )
         materialized = list(segments)
         text = " ".join(segment.text.strip() for segment in materialized).strip()

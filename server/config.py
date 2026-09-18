@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from server.denoise import DenoiseProfile, parse_profile
@@ -55,6 +55,10 @@ class Settings:
     cadence_window: int = 6
     denoise_profile: DenoiseProfile = DenoiseProfile.NONE
     bias_prompt: bool = True
+    """Word timings on final decodes. They force timestamp tokens into the decode,
+    which measured about 45 ms slower at the median and 110 ms at p95 with
+    large-v3, for an optional relevance signal. Off on the GPU profile."""
+    word_timestamps: bool = True
     beam_size: int = 5
     engine: Engine = Engine.AUTO
     grammar_model_dir: Path = Path("models/vosk-model-en-us-0.22-lgraph")
@@ -140,6 +144,7 @@ class Settings:
             cadence_window=_env_int("ASR_CADENCE_WINDOW", 6),
             denoise_profile=parse_profile(os.getenv("ASR_DENOISE_PROFILE", "none")),
             bias_prompt=_env_bool("ASR_BIAS_PROMPT", True),
+            word_timestamps=_env_bool("ASR_WORD_TIMESTAMPS", True),
             beam_size=_env_int("ASR_BEAM_SIZE", 5),
             engine=parse_engine(os.getenv("ASR_ENGINE", "auto")),
             grammar_model_dir=Path(
@@ -157,3 +162,39 @@ class Settings:
                 if origin.strip()
             ),
         )
+
+
+def service_settings() -> Settings:
+    """Settings for the running service, upgraded to the GPU profile when usable.
+
+    The GPU profile is the recognizer scripts/bakeoff.py chose on the replay
+    recordings: large-v3 with the shared example prompt reached 94% chart
+    accuracy at 330 ms median on an RTX 4060, against 54% for tiny.en and 55% for
+    the grammar recognizer. Word timings are off because that measurement was
+    made without them; they cost ~45 ms and feed an acoustic-confidence signal
+    that was never calibrated against large-v3.
+
+    Only the service does this. Scripts and tests that call Settings.from_env()
+    keep the CPU defaults, so a gate behaves the same on a laptop with a GPU as
+    in CI without one. Any ASR_* variable set explicitly always wins.
+    """
+    from server.cuda_runtime import cuda_available
+
+    settings = Settings.from_env()
+    requested = os.getenv("ASR_DEVICE", "auto").strip().lower()
+    if requested == "auto" and not cuda_available():
+        return replace(settings, device="cpu")
+    if requested not in {"auto", "cuda"}:
+        return settings
+
+    def unset(name: str) -> bool:
+        return os.getenv(name) is None
+
+    return replace(
+        settings,
+        device="cuda",
+        model_name="large-v3" if unset("ASR_MODEL") else settings.model_name,
+        compute_type="float16" if unset("ASR_COMPUTE_TYPE") else settings.compute_type,
+        engine=Engine.WHISPER if unset("ASR_ENGINE") else settings.engine,
+        word_timestamps=False if unset("ASR_WORD_TIMESTAMPS") else settings.word_timestamps,
+    )
