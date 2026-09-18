@@ -59,6 +59,9 @@ BiasMode = Literal["off", "prompt", "hotwords"]
 FloatAudio = NDArray[np.float32]
 
 
+SPEAKER_DECISIONS = frozenset({"clinician", "other", "unknown"})
+
+
 class DentalEvaluationError(ValueError):
     """A user-actionable fixture or evaluation error."""
 
@@ -76,9 +79,24 @@ class DentalUtterance:
     id: str
     prompt: str
     chartable: bool
+    # Who the scenario says is speaking. A recording made with one voice cannot
+    # carry this acoustically, so it is declared, exactly as the transcript corpus
+    # declares it. This harness measures recognition and the clinical pipeline;
+    # acoustic speaker verification is out of scope and abandoned (G18, G33).
+    speaker: str | None = None
+    overridden: bool = False
 
     def as_json(self) -> dict[str, object]:
-        return {"id": self.id, "prompt": self.prompt, "chartable": self.chartable}
+        payload: dict[str, object] = {
+            "id": self.id,
+            "prompt": self.prompt,
+            "chartable": self.chartable,
+        }
+        if self.speaker is not None:
+            payload["speaker"] = self.speaker
+        if self.overridden:
+            payload["overridden"] = True
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -327,7 +345,19 @@ def load_manifest(path: Path) -> DentalManifest:
             chartable_value = utterance.get("chartable", True)
             if not isinstance(chartable_value, bool):
                 raise ManifestError(f"{utterance_location}.chartable must be a boolean")
-            utterances.append(DentalUtterance(utterance_id, prompt, chartable_value))
+            speaker_value = utterance.get("speaker")
+            if speaker_value is not None and speaker_value not in SPEAKER_DECISIONS:
+                raise ManifestError(
+                    f"{utterance_location}.speaker must be one of {sorted(SPEAKER_DECISIONS)}"
+                )
+            overridden_value = utterance.get("overridden", False)
+            if not isinstance(overridden_value, bool):
+                raise ManifestError(f"{utterance_location}.overridden must be a boolean")
+            utterances.append(
+                DentalUtterance(
+                    utterance_id, prompt, chartable_value, speaker_value, overridden_value
+                )
+            )
 
         expect = _object(scenario.get("expect"), f"{location}.expect")
         start_value = scenario.get("start")

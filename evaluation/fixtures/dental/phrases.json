@@ -724,7 +724,8 @@
       "utterances": [
         {
           "id": "spk-clinician-u01",
-          "prompt": "three four five"
+          "prompt": "three four five",
+          "speaker": "clinician"
         }
       ],
       "expect": {
@@ -752,7 +753,8 @@
         {
           "id": "spk-other-values-u01",
           "prompt": "three four five",
-          "chartable": false
+          "chartable": false,
+          "speaker": "other"
         }
       ],
       "expect": {
@@ -780,7 +782,8 @@
         {
           "id": "spk-patient-complaint-u01",
           "prompt": "it hurts around number four",
-          "chartable": false
+          "chartable": false,
+          "speaker": "other"
         }
       ],
       "expect": {
@@ -811,7 +814,8 @@
         {
           "id": "spk-unknown-held-u01",
           "prompt": "three four five",
-          "chartable": false
+          "chartable": false,
+          "speaker": "unknown"
         }
       ],
       "expect": {
@@ -839,7 +843,9 @@
       "utterances": [
         {
           "id": "spk-override-u01",
-          "prompt": "three four five"
+          "prompt": "three four five",
+          "speaker": "other",
+          "overridden": true
         }
       ],
       "expect": {
@@ -863,7 +869,8 @@
       "utterances": [
         {
           "id": "spk-not-required-u01",
-          "prompt": "three four five"
+          "prompt": "three four five",
+          "speaker": "other"
         }
       ],
       "expect": {

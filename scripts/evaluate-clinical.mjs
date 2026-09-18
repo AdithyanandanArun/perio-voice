@@ -363,7 +363,15 @@ function validateTranscriptReport(value, source) {
         if (typeof chartable !== 'boolean') {
           schemaError(source, `${utteranceLocation}.chartable`, 'must be a boolean');
         }
-        const normalized = { id: utteranceId, prompt, chartable };
+        const speaker = utterance.speaker ?? null;
+        if (speaker !== null && !['clinician', 'other', 'unknown'].includes(speaker)) {
+          schemaError(source, `${utteranceLocation}.speaker`, 'must be clinician, other, or unknown');
+        }
+        const overridden = utterance.overridden ?? false;
+        if (typeof overridden !== 'boolean') {
+          schemaError(source, `${utteranceLocation}.overridden`, 'must be a boolean');
+        }
+        const normalized = { id: utteranceId, prompt, chartable, speaker, overridden };
         utteranceById.set(utteranceId, { ...normalized, scenarioId: id, cohort });
         return normalized;
       },
@@ -472,6 +480,11 @@ function transcriptCases(validated) {
       return {
         text: result.transcript,
         chartable: utterance.chartable,
+        // A recording made with one voice cannot carry who is speaking, so the
+        // manifest declares it, as the transcript corpus does. Dropping it here
+        // made every attribution scenario chart as if the clinician had spoken.
+        speaker: utterance.speaker,
+        overridden: utterance.overridden === true,
         noSpeechProbability: result.noSpeechProbability,
         averageLogProbability: result.averageLogProbability,
         decodeMs: result.decodeMs,

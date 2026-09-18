@@ -108,6 +108,12 @@ function validateManifest(manifest) {
       if ('chartable' in utterance && typeof utterance.chartable !== 'boolean') {
         fail(`${utteranceAt}.chartable must be boolean when present`);
       }
+      if ('speaker' in utterance && !['clinician', 'other', 'unknown'].includes(utterance.speaker)) {
+        fail(`${utteranceAt}.speaker must be clinician, other, or unknown when present`);
+      }
+      if ('overridden' in utterance && typeof utterance.overridden !== 'boolean') {
+        fail(`${utteranceAt}.overridden must be boolean when present`);
+      }
       if (utterance.chartable === false) nonChartableCount += 1;
     });
   });
