@@ -27,7 +27,8 @@ export type WorkflowCommand =
   | 'clear'
   | 'confirm'
   | 'pause'
-  | 'start';
+  | 'start'
+  | 'deny';
 
 export interface CorrectionTarget {
   scope: 'last' | 'site';
@@ -72,6 +73,7 @@ const COMMAND_TERMS: Readonly<Record<string, WorkflowCommand>> = {
   confirm: 'confirm',
   pause: 'pause',
   start: 'start',
+  deny: 'deny',
 };
 
 /**
@@ -86,6 +88,14 @@ const COMMAND_TERMS: Readonly<Record<string, WorkflowCommand>> = {
  * so the utterance never half-applies.
  */
 const CONTINUOUS_COMMANDS: ReadonlySet<WorkflowCommand> = new Set(['pause', 'start']);
+
+/**
+ * "chart"/"confirm" and "deny" answer a held confirmation by voice. "chart" is
+ * ordinary English too ("let's chart the lower arch"), so like pause/start they
+ * only count when the utterance names no tooth, surface, site, finding or
+ * measurement — a clinical sentence is never mistaken for an approval.
+ */
+const ANSWER_COMMANDS: ReadonlySet<WorkflowCommand> = new Set(['confirm', 'deny']);
 
 function hasClinicalContext(resolved: readonly ResolvedToken[]): boolean {
   return resolved.some((token) => {
@@ -163,7 +173,10 @@ export function parseIntents(
   for (const [term, command] of Object.entries(COMMAND_TERMS)) {
     const index = findTerm(term);
     if (index === -1) continue;
-    if (CONTINUOUS_COMMANDS.has(command) && hasClinicalContext(resolved)) continue;
+    if (
+      (CONTINUOUS_COMMANDS.has(command) || ANSWER_COMMANDS.has(command))
+      && hasClinicalContext(resolved)
+    ) continue;
     consumed.add(index);
     const binding = bindTooth(resolved, findTerm('tooth'), consumed);
     return {

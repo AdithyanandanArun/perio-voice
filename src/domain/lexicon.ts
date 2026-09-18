@@ -373,7 +373,24 @@ export const LEXICON: readonly LexiconEntry[] = [
   {
     canonical: 'confirm',
     category: 'command',
-    safe: ['confirm', 'confirmed', 'that is right', "that's right", 'yes confirm'],
+    // "chart" answers a held confirmation by voice (approve the newest one).
+    safe: [
+      'confirm',
+      'confirmed',
+      'that is right',
+      "that's right",
+      'yes confirm',
+      'chart',
+      'chart it',
+      'chart that',
+      'yes chart',
+    ],
+  },
+  {
+    // Discards the newest held confirmation by voice; writes nothing.
+    canonical: 'deny',
+    category: 'command',
+    safe: ['deny', 'deny it', 'deny that', 'reject', 'reject it', 'reject that', 'discard', 'discard it', 'discard that'],
   },
   {
     canonical: 'clear',

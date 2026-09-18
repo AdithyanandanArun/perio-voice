@@ -478,12 +478,37 @@ function applyCommand(
     case 'redo':
       return applyRedo(session, at, trace);
     case 'confirm':
-      trace.add('commit', 'pass', 'confirmation acknowledged');
-      return passthrough(session, 'confirmation', 'Say the value again or use the confirmation controls.');
+    case 'deny':
+      return answerConfirmation(session, intent.command === 'confirm', at, trace);
     case 'pause':
     case 'start':
       return applyContinuousToggle(session, intent.command, trace);
   }
+}
+
+/**
+ * "chart" / "deny" answer the newest held confirmation by voice, exactly as the
+ * approve / discard controls do: approval replays the held utterance through
+ * the whole pipeline with its override (so the value is audited like a spoken
+ * one), denial records it as ignored. With nothing held, nothing changes.
+ */
+function answerConfirmation(
+  session: ClinicalSession,
+  approve: boolean,
+  at: number,
+  trace: Trace,
+): Outcome {
+  const newest = session.pending[session.pending.length - 1];
+  if (newest === undefined) {
+    trace.add('commit', 'reject', 'no confirmation is waiting');
+    return passthrough(session, 'confirmation', 'Nothing is waiting for confirmation.');
+  }
+  trace.add('commit', 'pass', approve ? 'held item approved by voice' : 'held item denied by voice');
+  return passthrough(
+    resolveConfirmation(session, newest.id, approve, at),
+    'confirmation',
+    approve ? 'Charted the held item.' : 'Discarded the held item; nothing was charted.',
+  );
 }
 
 /**

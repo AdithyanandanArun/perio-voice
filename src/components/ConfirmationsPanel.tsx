@@ -27,6 +27,7 @@ export function ConfirmationsPanel({ pending, onResolve }: ConfirmationsPanelPro
         <div>
           <p className="section-index">NEEDS A DECISION</p>
           <h2 id="confirmations-title">Held for confirmation</h2>
+          <p className="confirmation-voice-hint">Say “chart” to approve the newest one, or “deny” to discard it.</p>
         </div>
         <CircleAlert size={20} aria-hidden="true" />
       </div>
