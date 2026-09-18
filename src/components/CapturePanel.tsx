@@ -1,6 +1,5 @@
 import { CircleAlert, LoaderCircle, Mic, MicOff, Radio, RefreshCw, Sparkles } from 'lucide-react';
 import { type CSSProperties, type FormEvent } from 'react';
-import { SpeakerPanel } from './SpeakerPanel';
 import type { AsrStatus } from '../speech/protocol';
 import type { LocalAsrController } from '../speech/useLocalAsr';
 
@@ -120,15 +119,6 @@ export function CapturePanel({
           <span>{speech.error}</span>
         </div>
       )}
-
-      <SpeakerPanel
-        enrollment={speech.enrollment}
-        verdict={speech.speaker}
-        enrolling={speech.enrolling}
-        supported={speech.supported}
-        onEnroll={() => void speech.enroll()}
-        onRevoke={() => void speech.revokeEnrollment()}
-      />
 
       {showDeveloperTools && (
         <div className="developer-tools">

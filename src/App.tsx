@@ -1,14 +1,4 @@
-import {
-  Activity,
-  AudioLines,
-  ChartNoAxesCombined,
-  LogOut,
-  Menu,
-  RotateCcw,
-  ShieldCheck,
-  UserRound,
-  X,
-} from 'lucide-react';
+import { AudioLines } from 'lucide-react';
 import {
   type FormEvent,
   useCallback,
@@ -20,21 +10,19 @@ import {
 } from 'react';
 import { AuthScreen } from './auth/AuthScreen';
 import { resumeAccount, signOut, type Account } from './auth/api';
-import { CapturePanel } from './components/CapturePanel';
-import { ChartTable } from './components/ChartTable';
-import { ConfirmationsPanel } from './components/ConfirmationsPanel';
-import { FixtureRecorder } from './components/FixtureRecorder';
-import { HistoryPanel } from './components/HistoryPanel';
-import { MetricsPanel } from './components/MetricsPanel';
-import { StationPanel } from './components/StationPanel';
-import { WorkflowPanel } from './components/WorkflowPanel';
 import { nextOpenPosition, toothAt } from './domain/chart';
 import { createInitialSession, currentRecord } from './domain/clinicalEngine';
 import type { WorkflowCommand } from './domain/grammar';
 import { sessionReducer } from './domain/sessionReducer';
 import type { SessionSettings, Surface, UtteranceInput } from './domain/types';
+import { GraphPage } from './pages/GraphPage';
+import { PerioTestPage } from './pages/PerioTestPage';
+import { ProfilePage } from './pages/ProfilePage';
+import { TopNav } from './pages/TopNav';
+import { useHashRoute } from './pages/useHashRoute';
 import type { AsrFinal, AsrStatus, ClinicalExpectation } from './speech/protocol';
 import { useLocalAsr } from './speech/useLocalAsr';
+import { applyTheme, persistTheme, resolveInitialTheme, type ThemePreference } from './theme';
 
 const EXAMPLE_PHRASES = [
   'three four five',
@@ -66,10 +54,6 @@ interface AppProps {
   showDeveloperTools?: boolean;
 }
 
-function initials(name: string): string {
-  return name.split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
-}
-
 function LoadingScreen() {
   return (
     <main className="session-loading" aria-live="polite">
@@ -79,6 +63,12 @@ function LoadingScreen() {
   );
 }
 
+/**
+ * Owns the live speech session and the chart state above the pages, so
+ * switching pages never drops the microphone or loses in-progress charting.
+ * Only the presentation swaps; this component, its reducer and its `useLocalAsr`
+ * instance stay mounted for the lifetime of the signed-in session.
+ */
 function ClinicalWorkspace({
   account,
   onLogout,
@@ -90,7 +80,8 @@ function ClinicalWorkspace({
 }) {
   const [session, dispatch] = useReducer(sessionReducer, undefined, () => createInitialSession());
   const [simulatedTranscript, setSimulatedTranscript] = useState('');
-  const [navigationOpen, setNavigationOpen] = useState(false);
+  const [route] = useHashRoute();
+  const [darkTheme, setDarkTheme] = useState(() => resolveInitialTheme() === 'dark');
   const simulatorStartedAt = useRef<number | null>(null);
   const acceptSpeechFinals = useRef(true);
   const contextVersionRef = useRef(session.context.version);
@@ -195,111 +186,53 @@ function ClinicalWorkspace({
     acceptSpeechFinals.current = true;
     void speech.start();
   };
+  const toggleTheme = (dark: boolean) => {
+    const next: ThemePreference = dark ? 'dark' : 'light';
+    setDarkTheme(dark);
+    applyTheme(next);
+    persistTheme(next);
+  };
 
   return (
     <div className="platform-shell">
-      <button
-        type="button"
-        className="mobile-nav-toggle"
-        aria-label={navigationOpen ? 'Close navigation' : 'Open navigation'}
-        aria-expanded={navigationOpen}
-        onClick={() => setNavigationOpen((open) => !open)}
-      >
-        {navigationOpen ? <X size={20} /> : <Menu size={20} />}
-      </button>
-
-      <aside className={`sidebar ${navigationOpen ? 'is-open' : ''}`} aria-label="Primary navigation">
-        <div className="brand sidebar-brand" aria-label="Perio Voice">
-          <span className="brand-mark" aria-hidden="true"><AudioLines size={22} /></span>
-          <span><strong>Perio Voice</strong><small>Clinical workspace</small></span>
-        </div>
-        <nav>
-          <a className="is-active" href="#charting" onClick={() => setNavigationOpen(false)}>
-            <ChartNoAxesCombined size={18} aria-hidden="true" /> Charting
-          </a>
-          <a href="#voice-profile" onClick={() => setNavigationOpen(false)}>
-            <UserRound size={18} aria-hidden="true" /> Voice profile
-          </a>
-          <a href="#activity" onClick={() => setNavigationOpen(false)}>
-            <Activity size={18} aria-hidden="true" /> Session activity
-          </a>
-        </nav>
-        <div className="sidebar-account">
-          <span className="account-avatar" aria-hidden="true">{initials(account.name)}</span>
-          <span><strong>{account.name}</strong><small>{account.email}</small></span>
-          <button type="button" aria-label="Sign out" onClick={onLogout}>
-            <LogOut size={18} aria-hidden="true" />
-          </button>
-        </div>
-      </aside>
-
-      <div className="platform-main">
-        <header className="topbar">
-          <div>
-            <p className="topbar-kicker">Periodontal chart</p>
-            <strong>New clinical session</strong>
-          </div>
-          <div className="topbar-actions">
-            <span
-              className={`system-status ${speech.listening ? 'is-live' : ''}`}
-              data-status={speech.status}
-            >
-              <span className="status-dot" aria-hidden="true" />
-              {STATUS_LABELS[speech.status]}
-            </span>
-            <button className="button button-quiet" type="button" onClick={resetSession}>
-              <RotateCcw size={16} aria-hidden="true" /> Reset session
-            </button>
-          </div>
-        </header>
-
-        <main id="main-content" className="workspace">
-          <section className="workspace-heading" id="charting" aria-labelledby="page-title">
-            <div>
-              <p className="eyebrow">Live charting</p>
-              <h1 id="page-title">Periodontal examination</h1>
-              <p>Record measurements and findings while keeping the active tooth in view.</p>
-            </div>
-            <div className="trust-note">
-              <ShieldCheck size={19} aria-hidden="true" />
-              <span><strong>Clinical safeguards active</strong>Uncertain entries wait for review.</span>
-            </div>
-          </section>
-
-          {showFixtureRecorder && <FixtureRecorder />}
-          <ConfirmationsPanel pending={session.pending} onResolve={resolveConfirmation} />
-
-          <div className="dashboard-grid">
-            <CapturePanel
-              speech={speech}
-              statusLabels={STATUS_LABELS}
-              examples={EXAMPLE_PHRASES}
-              simulatedTranscript={simulatedTranscript}
-              onSimulatedChange={changeSimulated}
-              onSubmit={submitTranscript}
-              onExample={runExample}
-              onStart={startSpeech}
-              showDeveloperTools={showDeveloperTools}
-            />
-            <StationPanel
-              session={session}
-              record={record}
-              tooth={tooth}
-              onChangeContext={changeContext}
-              onClear={clearActiveRecord}
-            />
-            <div id="activity"><MetricsPanel session={session} cadence={speech.cadence} /></div>
-            <HistoryPanel events={session.history} />
-            <WorkflowPanel
-              session={session}
-              onCommand={runCommand}
-              onSettings={changeSettings}
-              speakerEnrolled={speech.enrollment?.enrolled === true}
-            />
-          </div>
-          <ChartTable rows={chartRows} teeth={session.teeth} />
-        </main>
-      </div>
+      <a className="skip-link" href="#main-content">Skip to clinical chart</a>
+      <TopNav route={route} account={account} onLogout={onLogout} />
+      <main id="main-content" className="workspace">
+        {route === 'profile' && (
+          <ProfilePage
+            account={account}
+            speech={speech}
+            settings={session.settings}
+            onSettings={changeSettings}
+            darkTheme={darkTheme}
+            onToggleTheme={toggleTheme}
+          />
+        )}
+        {route === 'perio' && (
+          <PerioTestPage
+            session={session}
+            record={record}
+            tooth={tooth}
+            chartRows={chartRows}
+            speech={speech}
+            statusLabels={STATUS_LABELS}
+            examples={EXAMPLE_PHRASES}
+            simulatedTranscript={simulatedTranscript}
+            onSimulatedChange={changeSimulated}
+            onSubmit={submitTranscript}
+            onExample={runExample}
+            onStart={startSpeech}
+            showDeveloperTools={showDeveloperTools}
+            showFixtureRecorder={showFixtureRecorder}
+            onChangeContext={changeContext}
+            onClear={clearActiveRecord}
+            onCommand={runCommand}
+            onResetSession={resetSession}
+            onResolveConfirmation={resolveConfirmation}
+          />
+        )}
+        {route === 'graph' && <GraphPage session={session} clinicianName={account.name} />}
+      </main>
     </div>
   );
 }

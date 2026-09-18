@@ -8,9 +8,10 @@ import { TEST_ACCOUNT } from './accountFixture';
 describe('clinical platform surface', () => {
   it('shows account navigation and the focused charting workspace', () => {
     render(<App initialAccount={TEST_ACCOUNT} />);
-    expect(screen.getByRole('complementary', { name: 'Primary navigation' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Charting' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Voice profile' })).toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'Primary navigation' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Perio test' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Profile' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Graph' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Periodontal examination' })).toBeInTheDocument();
   });
 

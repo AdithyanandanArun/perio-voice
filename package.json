@@ -21,7 +21,8 @@
   "dependencies": {
     "lucide-react": "0.468.0",
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "write-excel-file": "^4.1.1"
   },
   "devDependencies": {
     "@eslint/js": "9.39.5",
@@ -39,6 +40,7 @@
     "eslint-plugin-react-refresh": "0.4.18",
     "globals": "15.14.0",
     "jsdom": "25.0.1",
+    "read-excel-file": "^9.3.10",
     "typescript": "5.7.3",
     "vite": "7.3.6",
     "vitest": "4.1.11",

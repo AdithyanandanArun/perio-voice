@@ -44,6 +44,10 @@ vi.mock('../src/speech/useLocalAsr', () => ({
   }),
 }));
 
+async function goToProfile(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole('link', { name: 'Profile' }));
+}
+
 async function say(user: ReturnType<typeof userEvent.setup>, phrase: string) {
   const input = screen.getByLabelText('Transcript simulator');
   await user.clear(input);
@@ -55,6 +59,7 @@ beforeEach(() => {
   harness.speaker = null;
   harness.enrollment = { enrolled: false, samples: 0, voicedMs: 0 };
   vi.clearAllMocks();
+  window.location.hash = '';
 });
 
 describe('full-mouth workflow controls', () => {
@@ -106,7 +111,9 @@ describe('full-mouth workflow controls', () => {
   });
 
   it('only offers speaker enforcement once a voice is enrolled', async () => {
+    const user = userEvent.setup();
     render(<App />);
+    await goToProfile(user);
     expect(screen.getByRole('checkbox', { name: /require the enrolled clinician/i })).toBeDisabled();
     expect(screen.getByText(/enrol a voice first/i)).toBeInTheDocument();
   });
@@ -114,12 +121,16 @@ describe('full-mouth workflow controls', () => {
 
 describe('held confirmations', () => {
   it('holds uncertain speech and charts it only when the clinician approves', async () => {
+    // A doubled negation cue ("no no bleeding") cancels back to a positive
+    // finding, but at reduced confidence (0.6 < POLARITY_CONFIRM_THRESHOLD),
+    // so it is still held under the `balanced` relevance mode even though
+    // that mode no longer holds merely `uncertain` relevance speech.
     const user = userEvent.setup();
     render(<App />);
-    await say(user, 'bleeding maybe');
+    await say(user, 'no no bleeding');
 
     const panel = screen.getByRole('region', { name: 'Held for confirmation' });
-    expect(within(panel).getByText('Unclear whether this was clinical')).toBeInTheDocument();
+    expect(within(panel).getByText('Polarity is uncertain')).toBeInTheDocument();
     expect(screen.getByText('Bleeding on probing').closest('.finding-row'))
       .toHaveTextContent('Not recorded');
 
@@ -131,7 +142,7 @@ describe('held confirmations', () => {
   it('discards a held utterance without writing anything', async () => {
     const user = userEvent.setup();
     render(<App />);
-    await say(user, 'bleeding maybe');
+    await say(user, 'no no bleeding');
     const panel = screen.getByRole('region', { name: 'Held for confirmation' });
     await user.click(within(panel).getByRole('button', { name: /discard/i }));
 
@@ -141,10 +152,12 @@ describe('held confirmations', () => {
 });
 
 describe('speaker attribution', () => {
-  it('reports who the last utterance was attributed to', () => {
+  it('reports who the last utterance was attributed to', async () => {
     harness.enrollment = { enrolled: true, samples: 2, voicedMs: 5_400 };
     harness.speaker = { decision: 'other', similarity: 0.41, overridden: false };
+    const user = userEvent.setup();
     render(<App />);
+    await goToProfile(user);
     expect(screen.getByText(/enrolled · 2 sample\(s\)/i)).toBeInTheDocument();
     expect(screen.getByText(/last utterance: another speaker/i)).toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: /require the enrolled clinician/i })).toBeEnabled();

@@ -2,20 +2,16 @@ import { ChevronLeft, ChevronRight, CornerUpLeft, Map, Redo2, SkipForward, Undo2
 import { QUADRANT_LABELS, workflowProgress } from '../domain/workflow';
 import { redoableEntry, undoableEntry } from '../domain/journal';
 import type { WorkflowCommand } from '../domain/grammar';
-import type { ClinicalSession, SessionSettings } from '../domain/types';
+import type { ClinicalSession } from '../domain/types';
 
 interface WorkflowPanelProps {
   session: ClinicalSession;
   onCommand: (command: WorkflowCommand) => void;
-  onSettings: (patch: Partial<SessionSettings>) => void;
-  speakerEnrolled: boolean;
 }
 
 export function WorkflowPanel({
   session,
   onCommand,
-  onSettings,
-  speakerEnrolled,
 }: WorkflowPanelProps) {
   const progress = workflowProgress(session.context, session.workflow, session.charts);
   const canUndo = undoableEntry(session.journal) !== null;
@@ -94,49 +90,6 @@ export function WorkflowPanel({
           Marked absent: {progress.skipped.join(', ')}
         </p>
       )}
-
-      <fieldset className="workflow-settings">
-        <legend>Capture behaviour</legend>
-        <label>
-          <input
-            type="checkbox"
-            checked={session.settings.autoAdvance}
-            onChange={(event) => onSettings({ autoAdvance: event.target.checked })}
-          />
-          <span>
-            Continuous charting
-            <small>Move to the next station when the next values arrive.</small>
-          </span>
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={session.settings.requireSpeaker}
-            disabled={!speakerEnrolled}
-            onChange={(event) => onSettings({ requireSpeaker: event.target.checked })}
-          />
-          <span>
-            Require the enrolled clinician
-            <small>
-              {speakerEnrolled
-                ? 'Only the enrolled voice can write to the chart.'
-                : 'Enrol a voice first; without one, every utterance would be held.'}
-            </small>
-          </span>
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={session.settings.relevanceMode === 'shadow'}
-            onChange={(event) =>
-              onSettings({ relevanceMode: event.target.checked ? 'shadow' : 'enforce' })}
-          />
-          <span>
-            Relevance shadow mode
-            <small>Score speech but let everything through, for evaluating the filter.</small>
-          </span>
-        </label>
-      </fieldset>
     </section>
   );
 }
