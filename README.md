@@ -222,16 +222,10 @@ This is a three-to-five-minute demonstration runbook.
 
 ### Known limitations
 
-- The replay corpus uses a pinned synthetic Piper voice; it is not a measure of
-  clinician accuracy across accents, rooms, or microphones.
-- Long-form continuous-speech duplication has architectural mitigations but does
-  not yet have a dedicated human stress test.
+
 - A GPU A/B study of Whisper previous-text conditioning remains open.
 - Classical short-utterance speaker attribution is not reliable enough to be the
   primary safety boundary and is disabled by default.
-- Overlapping speakers are not solved.
-- The prototype has one model worker per process rather than a multi-operatory
-  worker pool.
 - There is no production EHR integration, regulated audit retention, signed model
   registry, or compliance certification.
 - Cloud-ASR exploration is paused; local and cloud paths have not been shown
@@ -239,8 +233,6 @@ This is a three-to-five-minute demonstration runbook.
 
 ### Future scope
 
-- Collect a consented, stratified clinician dental-speech corpus.
-- Run long-form, overlap, accent, and previous-text-conditioning evaluations.
 - Add a trained speaker-embedding model behind the existing attribution API.
 - Add admission control and model-worker pools for multiple operatories.
 - Pre-provision signed model artifacts and add rollback/version policy.
